@@ -330,6 +330,7 @@ host_power_action() {
             remote_args="--force"
             done_msg="$MSG_BOT_SLEEP_EXECUTED"
             alive_style="check"
+            maint_cmd="/sleepforce"
             ;;
         shutdown)
             progress_msg="$MSG_BOT_SHUTDOWN_SENDING"
@@ -346,6 +347,7 @@ host_power_action() {
             remote_args="--shutdown --force"
             done_msg="$MSG_BOT_SHUTDOWN_EXECUTED"
             alive_style="inline"
+            maint_cmd="/hostshutdownforce"
             ;;
         reboot)
             progress_msg="$MSG_BOT_REBOOT_SENDING"
@@ -362,6 +364,7 @@ host_power_action() {
             remote_args="--reboot --force"
             done_msg="$MSG_BOT_REBOOT_EXECUTED"
             alive_style="inline"
+            maint_cmd="/hostrebootforce"
             ;;
         *)
             return
@@ -397,17 +400,31 @@ host_power_action() {
             ;;
     esac
 
-    # Pre-flight: the real action runs detached, so without this the user would
+    # Pre-flight. The real action runs detached, so without this the user would
     # always see "executed" even when the host refused to act. The host's idle
-    # checks (active window, running guests, CPU, network, ports) apply equally
-    # to /sleep, /hostshutdown and /hostreboot, so all three report the same way.
+    # checks (active window, running guests, CPU, network, ports) apply equally to
+    # /sleep, /hostshutdown and /hostreboot, so all three report the same way.
+    #
+    # Probe the host once. The safe variants act on the full verdict; the force
+    # variants ignore the safety blocks (that is the point of "force") but still
+    # honour the run lock — so a busy host is reported instead of silently
+    # no-op'ing like it used to.
+    #
+    # stderr is captured too: the SSH wrapper reports a refusal ("Access Denied")
+    # on stderr, which is how we tell a stale wrapper from a stale monitor.
+    local chk verdict
+    chk=$($SSH_CMD "/usr/local/bin/proxmox_idle_monitor.sh --check" 2>&1)
+    verdict=$(printf '%s\n' "$chk" | grep '^HOMELAB_CHECK:' | tail -n 1)
+    export arg1="$maint_cmd"
+
+    case "$verdict" in
+        HOMELAB_CHECK:BUSY)
+            send_message "$chat_id" "$(render_msg "$MSG_BOT_PRECHECK_BUSY")" "" "$message_id"
+            return
+            ;;
+    esac
+
     if [ "$precheck" -eq 1 ]; then
-        local chk verdict
-        # Capture stderr too: the SSH wrapper reports a refusal ("Access Denied")
-        # on stderr, which is how we tell a stale wrapper from a stale monitor.
-        chk=$($SSH_CMD "/usr/local/bin/proxmox_idle_monitor.sh --check" 2>&1)
-        verdict=$(printf '%s\n' "$chk" | grep '^HOMELAB_CHECK:' | tail -n 1)
-        export arg1="$maint_cmd"
         case "$verdict" in
             HOMELAB_CHECK:BLOCKED:*)
                 export arg2="${verdict#HOMELAB_CHECK:BLOCKED: }"

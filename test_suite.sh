@@ -337,11 +337,14 @@ fi
 check_ok "notify_homelab.sh reads /etc/power_homelab.conf" \
     grep -q '/etc/power_homelab.conf' openwrt/telegram/notify_homelab.sh
 
-# 7.3 Proxmox scripts must not read the router config path
-if grep -rq '/etc/power_homelab.conf' proxmox/ 2>/dev/null; then
-    report_fail "A proxmox script references the router config path /etc/power_homelab.conf"
+# 7.3 Proxmox monitons/wrapper must not read the router config path.
+# (install_proxmox.sh only mentions it in user-facing guidance, so it is exempt.)
+if grep -rq '/etc/power_homelab.conf' \
+        proxmox/proxmox_idle_monitor.sh proxmox/proxmox_resource_monitor.sh \
+        proxmox/homelab_ssh_wrapper.sh proxmox/lib.sh 2>/dev/null; then
+    report_fail "A proxmox script reads the router config path /etc/power_homelab.conf"
 else
-    report_pass "No proxmox script references the router config path"
+    report_pass "No proxmox script reads the router config path"
 fi
 
 # 7.4 No eval-based message expansion anywhere (use render_msg instead)
@@ -451,6 +454,10 @@ else
 fi
 check_ok "is_host_alive bounds the SSH probe with BusyBox timeout" \
     grep -q 'timeout 6 \$SSH_CMD' openwrt/components/check_helper.sh
+check_ok "is_host_alive never runs an unbounded SSH probe" \
+    bash -c '! grep -q "elif \$SSH_CMD" openwrt/components/check_helper.sh'
+check_ok "is_host_alive probes the bounded curl/web path before SSH" \
+    bash -c '[ "$(grep -n "8006" openwrt/components/check_helper.sh | cut -d: -f1)" -lt "$(grep -n "timeout 6 \$SSH_CMD" openwrt/components/check_helper.sh | cut -d: -f1)" ]'
 
 # 7.16 SSH key permission check repairs a 0644 key and is silent for 0600
 PERM_OPEN=$(mktemp); chmod 644 "$PERM_OPEN"
@@ -543,6 +550,37 @@ check_ok "wrapper still matches the router's reboot-force command exactly" \
     grep -q '"nohup /usr/local/bin/proxmox_idle_monitor.sh --reboot --force >/dev/null 2>&1 &")' proxmox/homelab_ssh_wrapper.sh
 check_ok "guest VM shutdown is bounded (--timeout) rather than 180s/VM" \
     grep -q 'qm shutdown "\$vmid" --timeout 90' proxmox/proxmox_idle_monitor.sh
+
+# 7.26 The single-instance lock must outlast a timer run and report BUSY
+check_ok "idle monitor uses a non-leaking directory lock (not an inherited fd)" \
+    bash -c 'grep -q "LOCKDIR=\"/run/proxmox_idle_monitor.lock.d\"" proxmox/proxmox_idle_monitor.sh && ! grep -q "exec 9>" proxmox/proxmox_idle_monitor.sh'
+check_ok "idle monitor reports BUSY instead of silently skipping" \
+    grep -q 'HOMELAB_CHECK:BUSY' proxmox/proxmox_idle_monitor.sh
+check_ok "bot surfaces the BUSY state" \
+    grep -q 'MSG_BOT_PRECHECK_BUSY' openwrt/telegram/components/command_helper.sh
+check_ok "force variants also carry a maint_cmd (for the BUSY message)" \
+    bash -c '[ "$(grep -c "maint_cmd=\"/" openwrt/telegram/components/command_helper.sh)" = "6" ]'
+check_ok "proxmox installer says configuration is managed from OpenWrt" \
+    grep -q 'managed from OpenWrt' proxmox/install_proxmox.sh
+check_ok "proxmox installer dropped the misleading 'your laptop' wording" \
+    bash -c '! grep -q "your laptop" proxmox/install_proxmox.sh'
+
+# 7.27 Functional: --check reports BUSY while the lock is held (live pid)
+BUSY_DIR=$(mktemp -d)
+sed "s#/run/proxmox_idle_monitor.lock.d#$BUSY_DIR/lock.d#g" proxmox/proxmox_idle_monitor.sh > proxmox/_mon_busy_test.sh
+mkdir "$BUSY_DIR/lock.d"
+echo $$ > "$BUSY_DIR/lock.d/pid"        # a live PID => lock is held
+BUSY_OUT=$(bash proxmox/_mon_busy_test.sh --check 2>/dev/null | tail -n 1)
+# A dead PID must be treated as stale (not busy).
+echo 999999 > "$BUSY_DIR/lock.d/pid"
+STALE_OUT=$(bash proxmox/_mon_busy_test.sh --check 2>/dev/null | grep '^HOMELAB_CHECK:' | tail -n 1)
+rm -f proxmox/_mon_busy_test.sh
+rm -rf "$BUSY_DIR"
+check "idle monitor --check reports BUSY while the lock is held" "$BUSY_OUT" "HOMELAB_CHECK:BUSY"
+case "$STALE_OUT" in
+    HOMELAB_CHECK:BUSY) report_fail "stale lock was treated as busy" ;;
+    *) report_pass "stale lock (dead PID) is not treated as busy" ;;
+esac
 check_ok "host_power_action consumes the --check verdict" \
     grep -q 'HOMELAB_CHECK:BLOCKED:\*' openwrt/telegram/components/command_helper.sh
 check_ok "a blocked safe action sends MSG_BOT_ACTION_BLOCKED" \
@@ -558,10 +596,14 @@ check_ok "blocked safe actions offer the force override" \
 
 # 7.22 Functional: --check reports the block reason (temp config, protected proc)
 CHK_CONF=$(mktemp)
+CHK_DIR=$(mktemp -d)
 printf 'PROTECTED_PROCESSES="sh"\nLOG_FILE="/dev/null"\nENABLE_SYSLOG=0\nNET_INTERFACE="nonexistent0"\n' > "$CHK_CONF"
-sed "s#^CONF=\"/etc/homelab_power.conf\"#CONF=\"$CHK_CONF\"#" proxmox/proxmox_idle_monitor.sh > proxmox/_mon_check_test.sh
-CHK_BLOCKED_OUT=$(bash proxmox/_mon_check_test.sh --check 2>/dev/null)
+sed -e "s#^CONF=\"/etc/homelab_power.conf\"#CONF=\"$CHK_CONF\"#" \
+    -e "s#/run/proxmox_idle_monitor.lock#$CHK_DIR/lock#g" \
+    proxmox/proxmox_idle_monitor.sh > proxmox/_mon_check_test.sh
+CHK_BLOCKED_OUT=$(bash proxmox/_mon_check_test.sh --check 2>/dev/null | grep '^HOMELAB_CHECK:' | tail -n 1)
 rm -f proxmox/_mon_check_test.sh "$CHK_CONF"
+rm -rf "$CHK_DIR"
 case "$CHK_BLOCKED_OUT" in
     "HOMELAB_CHECK:BLOCKED: protected process 'sh' is currently running")
         report_pass "--check reports the exact block reason (clean stdout)" ;;

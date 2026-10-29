@@ -54,20 +54,27 @@ else
     echo "All dependencies (bc, conntrack, tcpdump) are already installed."
 fi
 
-# 2. Copy configuration file
-echo -e "${GREEN}[2/5] Setting up configuration...${NC}"
+# 2. Seed configuration file (only if absent)
+# NOTE: /etc/homelab_power.conf is NOT the source of truth. The configuration is
+# maintained in the OpenWrt router's /etc/power_homelab.conf and pushed here by
+# the router's `homelab_config_sync.sh`. This step only seeds a sane default so
+# the timers have something to read before the first sync.
+echo -e "${GREEN}[2/5] Seeding configuration...${NC}"
 if [ -f "/etc/homelab_power.conf" ] && [ "$FORCE_CONFIG" -ne 1 ]; then
-    echo "Configuration file /etc/homelab_power.conf already exists. Preserving it."
-    echo "Run this installer with the -f or --force flag to overwrite it with your laptop's version."
+    echo "/etc/homelab_power.conf already exists - leaving it as is."
+    echo "It is managed from OpenWrt: edit /etc/power_homelab.conf on the router"
+    echo "and run 'homelab_config_sync.sh' there to update this file."
 else
     if [ -f "homelab_power.conf" ]; then
         cp homelab_power.conf /etc/homelab_power.conf
-        echo "Created/Overwrote /etc/homelab_power.conf from your custom local config file."
+        echo "Seeded /etc/homelab_power.conf from the local homelab_power.conf."
     else
         cp homelab_power.conf.example /etc/homelab_power.conf
-        echo "Created/Overwrote /etc/homelab_power.conf from the default template."
+        echo "Seeded /etc/homelab_power.conf from homelab_power.conf.example."
     fi
     chmod 600 /etc/homelab_power.conf
+    echo "This is only a seed - the next 'homelab_config_sync.sh' run from OpenWrt"
+    echo "will overwrite it with the router's configuration."
 fi
 
 # 3. Copy scripts
@@ -111,8 +118,9 @@ systemctl enable --now proxmox_resource_monitor.timer
 
 echo -e "${BLUE}====================================================${NC}"
 echo -e "${GREEN}Installation Successful!${NC}"
-echo -e "You can configure thresholds and monitored ports in:"
-echo -e "   ${BLUE}/etc/homelab_power.conf${NC}"
+echo -e "Configuration is managed from the OpenWrt router, not here:"
+echo -e "   edit ${BLUE}/etc/power_homelab.conf${NC} on the router, then run"
+echo -e "   ${BLUE}homelab_config_sync.sh${NC} to push it to ${BLUE}/etc/homelab_power.conf${NC}."
 echo -e ""
 echo -e "To view logs, run:"
 echo -e "   ${BLUE}tail -f /var/log/proxmox_power.log${NC}"

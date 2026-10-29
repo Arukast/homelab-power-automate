@@ -13,28 +13,32 @@ is_pid_running() {
     echo "$$" > "$PIDFILE"
 }
 
-# Multi-stage Host Liveness Probe (ICMP ping + Dropbear SSH + WebUI curl fallback)
+# Multi-stage Host Liveness Probe: ICMP -> bounded web/TCP probe -> bounded SSH.
+#
+# Ordered cheap-first and EVERY stage is time-bounded. With the permanent static
+# ARP entry, a sleeping host blackholes SYN packets, so an unbounded SSH connect
+# hangs for the kernel TCP timeout (~2 min) on every probe; the SSH stage is
+# therefore only attempted when `timeout` is available, and the bounded curl
+# stage (which is present on every install) runs first.
 is_host_alive() {
     if ping -c 1 -W 1 "$HOST_IP" >/dev/null 2>&1; then
         return 0
     fi
-    # Bound the SSH stage: with the permanent static ARP entry the TCP handshake
-    # to a sleeping host blackholes, so an unbounded connect would hang for the
-    # full kernel TCP timeout (~2 minutes) on every probe. BusyBox `timeout`
-    # caps it; Dropbear's client has no portable connect-timeout flag.
-    if command -v timeout >/dev/null 2>&1; then
-        if timeout 6 $SSH_CMD "echo OK" >/dev/null 2>&1; then
-            return 0
-        fi
-    elif $SSH_CMD "echo OK" >/dev/null 2>&1; then
-        return 0
-    fi
+
     if command -v curl >/dev/null 2>&1; then
         if curl -k -s --connect-timeout 1 "https://${HOST_IP}:8006" >/dev/null 2>&1 || \
            curl -s --connect-timeout 1 "http://${HOST_IP}:80" >/dev/null 2>&1; then
             return 0
         fi
     fi
+
+    # Only when we can bound it; never an unbounded connect.
+    if command -v timeout >/dev/null 2>&1; then
+        if timeout 6 $SSH_CMD "echo OK" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
     return 1
 }
 

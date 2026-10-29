@@ -71,14 +71,48 @@ for arg in "$@"; do
     esac
 done
 
-# --- Single-instance lock (task 2.2) ---
-# This script is launched both by proxmox_idle_monitor.timer and on demand by
-# the Telegram command handlers; two concurrent runs could double-suspend
-# guests. util-linux flock is present on Proxmox VE. --check never locks, so it
-# can run alongside an in-flight timer run.
-if [ "$REPORT_ONLY" -eq 0 ]; then
-    exec 9>/run/proxmox_idle_monitor.lock
-    flock -w 5 9 || { log "another instance is running; exiting"; exit 0; }
+# --- Single-instance lock -----------------------------------------------------
+# This script is launched both by proxmox_idle_monitor.timer and on demand by the
+# Telegram command handlers; two concurrent runs could double-suspend guests.
+#
+# Deliberately NOT `flock` on an inherited fd: an open fd is inherited by every
+# child, and `qm`/`pct` leave it open in the QEMU/LXC process, so the lock ends up
+# held by `kvm` for the VM's whole lifetime and every later run (timer included)
+# bails out. A directory lock is atomic and never leaks into children.
+LOCKDIR="/run/proxmox_idle_monitor.lock.d"
+
+lock_holder_alive() {
+    _h=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    [ -n "$_h" ] && kill -0 "$_h" 2>/dev/null
+}
+
+if [ "$REPORT_ONLY" -eq 1 ]; then
+    # --check never takes the lock; it only reports a busy host.
+    if [ -d "$LOCKDIR" ] && lock_holder_alive; then
+        printf 'HOMELAB_CHECK:BUSY\n'
+        exit 0
+    fi
+else
+    _waited=0
+    _stale=0
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do
+        if [ -d "$LOCKDIR" ] && ! lock_holder_alive; then
+            # Stale lock left by a crashed/killed run - take it over.
+            _stale=$((_stale + 1))
+            if [ "$_stale" -le 5 ]; then
+                rm -rf "$LOCKDIR" 2>/dev/null
+                continue
+            fi
+        fi
+        _waited=$((_waited + 1))
+        if [ "$_waited" -ge 60 ]; then
+            log "another instance is running; exiting"
+            exit 0
+        fi
+        sleep 1
+    done
+    echo $$ > "$LOCKDIR/pid" 2>/dev/null
+    trap 'rm -rf "$LOCKDIR" 2>/dev/null' EXIT INT TERM
 fi
 
 # Report the reason the host is NOT idle and stop. In --check mode the reason is
