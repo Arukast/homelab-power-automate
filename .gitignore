@@ -8,3 +8,5 @@ power_homelab.conf
 *.swo
 *~
 .DS_Store
+
+.commandcode
