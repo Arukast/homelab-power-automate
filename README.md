@@ -341,7 +341,7 @@ cd homelab-powerorchestractor
 ./test_suite.sh
 ```
 
-All 103 unit tests will execute and report pass/fail status with detailed diagnostic logs.
+The full suite (currently 149 tests) will execute and report pass/fail status with detailed diagnostic logs.
 
 ---
 

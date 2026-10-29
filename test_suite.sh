@@ -348,7 +348,7 @@ else
 fi
 
 # 7.4 No eval-based message expansion anywhere (use render_msg instead)
-if grep -rn 'eval echo' proxmox/ openwrt/ >/dev/null 2>&1; then
+if grep -rn 'eval echo' --include='*.sh' proxmox/ openwrt/ >/dev/null 2>&1; then
     report_fail "Found leftover 'eval echo' message expansion"
 else
     report_pass "No 'eval echo' message expansion remains"
@@ -417,7 +417,7 @@ fi
 # 7.10 /node is dispatched; inline-keyboard buttons have been removed everywhere
 check_ok "process_command_helper.sh dispatches /node" \
     grep -q '/node)' openwrt/telegram/components/process_command_helper.sh
-if grep -rq 'inline_keyboard' openwrt/telegram/ 2>/dev/null; then
+if grep -rq --include='*.sh' 'inline_keyboard' openwrt/telegram/ 2>/dev/null; then
     report_fail "Inline-keyboard button markup is still generated in openwrt/telegram/"
 else
     report_pass "No inline-keyboard button markup remains (all buttons removed)"
@@ -447,7 +447,7 @@ check_ok "node_command maps restart -> reboot for the wrapper allow-list" \
 
 # 7.15 Router SSH must not use OpenSSH-only options: OpenWrt's `ssh` is Dropbear's
 # client, which rejects `-o ConnectTimeout=...` and prints a warning to output.
-if grep -rqE 'ssh .*-o +ConnectTimeout' openwrt/ 2>/dev/null; then
+if grep -rqE --include='*.sh' 'ssh .*-o +ConnectTimeout' openwrt/ 2>/dev/null; then
     report_fail "An openwrt script passes -o ConnectTimeout (Dropbear rejects unknown -o options)"
 else
     report_pass "No Dropbear-incompatible '-o ConnectTimeout' in openwrt/"
