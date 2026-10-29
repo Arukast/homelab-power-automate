@@ -18,7 +18,15 @@ is_host_alive() {
     if ping -c 1 -W 1 "$HOST_IP" >/dev/null 2>&1; then
         return 0
     fi
-    if $SSH_CMD "echo OK" >/dev/null 2>&1; then
+    # Bound the SSH stage: with the permanent static ARP entry the TCP handshake
+    # to a sleeping host blackholes, so an unbounded connect would hang for the
+    # full kernel TCP timeout (~2 minutes) on every probe. BusyBox `timeout`
+    # caps it; Dropbear's client has no portable connect-timeout flag.
+    if command -v timeout >/dev/null 2>&1; then
+        if timeout 6 $SSH_CMD "echo OK" >/dev/null 2>&1; then
+            return 0
+        fi
+    elif $SSH_CMD "echo OK" >/dev/null 2>&1; then
         return 0
     fi
     if command -v curl >/dev/null 2>&1; then

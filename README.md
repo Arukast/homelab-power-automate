@@ -43,9 +43,11 @@ sequenceDiagram
 The suite is modularized into two distinct control zones:
 
 ```text
-PowerOrchestrator/
+homelab-powerorchestractor/
 ├── README.md                               # This documentation
+├── test_suite.sh                           # Automated verification & unit tests
 ├── proxmox/                                # Proxmox VE Host Management
+│   ├── lib.sh                              # Shared log/notify/render_msg + safe config loaders
 │   ├── proxmox_idle_monitor.sh             # Core idle monitor & guest suspender
 │   ├── proxmox_idle_monitor.(service|timer) # Systemd service + 10-min timer
 │   ├── proxmox_resource_monitor.sh         # Host/guest resource usage monitor
@@ -55,11 +57,17 @@ PowerOrchestrator/
 └── openwrt/                                # OpenWrt Router Control Plane
     ├── power_homelab.conf(.example)        # Router/proxy/telegram configuration
     ├── messages_homelab.conf               # Discord/telegram notification messages
-    ├── components/                         # Shared helpers (check, common_init, conf)
+    ├── components/                         # Shared helpers (lib, common_init, conf, check)
     ├── config_sync/                        # homelab_config_sync.sh + deploy/verify helpers
     ├── install/                            # Automated installer + components/
     ├── power_proxy/                        # Wake-on-Demand proxies + components/
+    │   ├── power_proxy.init                # procd service definition
+    │   └── ...
     └── telegram/                           # Telegram daemon, commands/, and helpers
+        ├── telegram_bot.init               # procd service definition
+        ├── notify_homelab.sh               # Centralized notification dispatcher
+        ├── maintenance_homelab.sh          # CLI maintenance control utility
+        └── ...
 ```
 
 ---
@@ -117,7 +125,7 @@ The OpenWrt router needs passwordless access to the Proxmox VE host to safely ex
 1. **Transfer the Proxmox files**:
    Transfer the `proxmox/` directory of this suite to your Proxmox host (e.g., via SCP):
    ```bash
-   scp -r PowerOrchestrator/proxmox root@192.168.11.10:/tmp/proxmox_install
+   scp -r proxmox root@192.168.11.10:/tmp/proxmox_install
    ```
 2. **Run the Installer**:
    SSH into the Proxmox host and execute the installer:
@@ -137,7 +145,7 @@ The OpenWrt router needs passwordless access to the Proxmox VE host to safely ex
    Transfer the `openwrt/` directory of this suite to your OpenWrt router (e.g., via SCP):
    ```bash
    ssh root@192.168.1.1 "rm -rf /tmp/openwrt_powerorchestractor"
-   scp -O -r PowerOrchestrator/openwrt root@192.168.1.1:/tmp/openwrt_powerorchestractor
+   scp -O -r openwrt root@192.168.1.1:/tmp/openwrt_powerorchestractor
    ```
 2. **Run the Installer**:
    SSH into the OpenWrt router and execute the installer:
@@ -153,7 +161,7 @@ The OpenWrt router needs passwordless access to the Proxmox VE host to safely ex
 3. **Configure Credentials, IPs, and Custom Messages**:
    - Edit the system configuration on the router:
      ```bash
-     nano /etc/homelab_power.conf
+     nano /etc/power_homelab.conf
      ```
      Ensure you set:
      - `BOT_TOKEN`
@@ -197,7 +205,7 @@ The OpenWrt router needs passwordless access to the Proxmox VE host to safely ex
 
 If you want to run multiple heavy services but dynamically reclaim their memory and CPU cores when not in use:
 
-1. **Configure your guest maps** in `/etc/homelab_power.conf` on your OpenWrt router:
+1. **Configure your guest maps** in `/etc/power_homelab.conf` on your OpenWrt router:
    ```ini
    # Format: "VMID:IP_ADDRESS:PORT/PROTOCOL:IDLE_MINUTES"
    # PROTOCOL can be 'tcp' or 'udp'
@@ -222,7 +230,7 @@ Monitored ports support protocol suffixes (e.g. `MONITORED_PORTS="22,25565/tcp,1
 You can specify time ranges during which the Proxmox host must remain awake, while enabling automatic sleep during off-hours:
 
 * **Configure Active Awake Windows**:
-  In `/etc/homelab_power.conf` (synced to Proxmox), set `ACTIVE_TIME_WINDOWS`:
+  In the router's `/etc/power_homelab.conf` (synced to Proxmox), set `ACTIVE_TIME_WINDOWS`:
   ```ini
   ACTIVE_TIME_WINDOWS="Mon-Sun:05:00-23:00"
   ```
@@ -243,7 +251,7 @@ You can specify time ranges during which the Proxmox host must remain awake, whi
      ```cron
      0 5 * * * etherwake -b -i br-lan aa:bb:cc:dd:ee:ff
      ```
-     *(Replace `aa:bb:cc:dd:ee:ff` with your Proxmox server's MAC address from `HOST_MAC` in `/etc/homelab_power.conf`)*.
+     *(Replace `aa:bb:cc:dd:ee:ff` with your Proxmox server's MAC address from `HOST_MAC` in `/etc/power_homelab.conf`)*.
   3. Ensure the cron daemon is enabled and running on OpenWrt:
      ```bash
      /etc/init.d/cron enable
@@ -315,7 +323,7 @@ To enable the auto-completion menu for commands in Telegram:
 ## Security Protocols and Best Practices
 
 1. **Strict Admin Verification**:
-   The Telegram daemon cross-references every single update's sender ID with the `ALLOWED_USER_IDS` in `/etc/homelab_power.conf`. Requests from unauthorized users are immediately dropped and reported to the main administrator.
+   The Telegram daemon cross-references every single update's sender ID with the `ALLOWED_USER_IDS` in `/etc/power_homelab.conf`. Requests from unauthorized users are immediately dropped and reported to the main administrator.
 2. **Local SSH Sandboxing**:
    Ensure `/etc/dropbear/id_dropbear` on the router has restricted permissions (`chmod 600`). Since Dropbear keys do not support passphrase protection natively, ensure physical security of the router backup files.
 3. **No External Ingress exposure**:
@@ -325,13 +333,21 @@ To enable the auto-completion menu for commands in Telegram:
 
 ## Automated Verification & Test Suite
 
-PowerOrchestrator includes a built-in automated test suite to validate all shell syntax, time scheduling logic, math conversions, JSON escape handlers, SSH wrapper dispatch rules, and multi-map guest discovery.
+The suite includes a built-in automated test suite that validates all shell syntax, time scheduling logic, math conversions, JSON escape handlers, SSH wrapper dispatch rules, and multi-map guest discovery. It sources the **real** libraries (`proxmox/lib.sh`, `openwrt/components/lib.sh`) rather than re-implementing them, and includes regression tests for previously-fixed defects (mis-sourced helpers, wrong config paths, unsafe config loading, `/node` dispatch).
 
 To run the test suite locally or in CI:
 
 ```bash
-cd PowerOrchestrator
+cd homelab-powerorchestractor
 ./test_suite.sh
 ```
 
-All 77 unit tests will execute and report pass/fail status with detailed diagnostic logs.
+All 103 unit tests will execute and report pass/fail status with detailed diagnostic logs.
+
+---
+
+## Security Notes
+
+* **SSH wrapper (Proxmox).** `homelab_ssh_wrapper.sh` is the only trust boundary between the router's SSH key and root on Proxmox. It allow-lists exact commands, and the config-push path validates every `KEY=VALUE` line before installing the file with mode `600` — the monitors then load it through a strict allow-list reader rather than `source`-ing it, so a pushed file can never execute code.
+* **No `eval`.** Notification templates are rendered with pure parameter expansion (`render_msg`), never `eval`, on both the router and Proxmox.
+* **Messages file.** The router reads `/etc/messages_homelab.conf`. On Proxmox the same file name (`/etc/homelab_messages.conf`) is optional; if absent, the monitors fall back to their built-in default messages.

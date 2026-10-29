@@ -1,4 +1,8 @@
-#!/bin/bash
+#!/bin/sh
+# =============================================================================
+# /wake Bot Command Handler
+# File: /usr/bin/telegram_components/commands/wake_command.sh
+# =============================================================================
 
 wake_command() {
     send_message "$chat_id" "$(expand_msg "$MSG_BOT_WOL_SENT")"

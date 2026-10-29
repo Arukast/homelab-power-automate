@@ -7,12 +7,13 @@
 # Load common initialization (paths, config, SSH vars)
 . /usr/bin/components/common_init.sh
 
-# Load config_sync-specific components
-. "$SYNC_COMP"/permission_helper.sh
-. "$SYNC_COMP"/verify_helper.sh
-. "$SYNC_COMP"/router_ip_helper.sh
-. "$SYNC_COMP"/sanitized_conf_helper.sh
-. "$SYNC_COMP"/deploy_helper.sh
+# Load config_sync-specific components (source_required aborts loudly on a
+# missing/renamed component instead of silently skipping its step)
+source_required "$SYNC_COMP/permission_helper.sh"
+source_required "$SYNC_COMP/verify_helper.sh"
+source_required "$SYNC_COMP/router_ip_helper.sh"
+source_required "$SYNC_COMP/sanitized_conf_helper.sh"
+source_required "$SYNC_COMP/deploy_helper.sh"
 
 # Read Config
 init_common_config

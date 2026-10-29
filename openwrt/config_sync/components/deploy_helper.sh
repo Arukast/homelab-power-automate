@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 deploy_config() {
     echo "Deploying configuration to Proxmox..."

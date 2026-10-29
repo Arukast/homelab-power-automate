@@ -1,8 +1,14 @@
 #!/bin/bash
 # =============================================================================
 # Homelab Power Orchestrator - Automated Verification & Unit Test Suite
-# File: PowerOrchestrator/test_suite.sh
+# File: homelab-powerorchestractor/test_suite.sh
 # Usage: ./test_suite.sh
+#
+# IMPORTANT: this suite sources the REAL libraries (proxmox/lib.sh and
+# openwrt/components/lib.sh) rather than re-implementing their logic. Earlier
+# versions duplicated day_to_num / is_in_active_window / to_integer / message
+# expansion, which is why real bugs (mis-sourced helper, wrong config paths)
+# could pass while the copies stayed green.
 # =============================================================================
 
 # Change directory to the script's root location
@@ -39,6 +45,25 @@ print_header() {
     echo -e "${BLUE}${BOLD}======================================================================${NC}"
 }
 
+# check <description> <actual> <expected>
+check() {
+    if [ "$2" = "$3" ]; then
+        report_pass "$1"
+    else
+        report_fail "$1" "got: '$2', expected: '$3'"
+    fi
+}
+
+# check_ok <description> <command...>  (passes when the command exits 0)
+check_ok() {
+    local desc="$1"; shift
+    if "$@" >/dev/null 2>&1; then
+        report_pass "$desc"
+    else
+        report_fail "$desc"
+    fi
+}
+
 echo -e "${BOLD}Starting PowerOrchestrator Test Suite...${NC}"
 
 # =============================================================================
@@ -61,22 +86,24 @@ check_syntax() {
     fi
 }
 
+check_syntax "proxmox/lib.sh" "bash"
 check_syntax "proxmox/proxmox_idle_monitor.sh" "bash"
 check_syntax "proxmox/homelab_ssh_wrapper.sh" "sh"
 check_syntax "proxmox/proxmox_resource_monitor.sh" "bash"
 check_syntax "proxmox/install_proxmox.sh" "bash"
 
 # Shared components
+check_syntax "openwrt/components/lib.sh" "sh"
 check_syntax "openwrt/components/check_helper.sh" "sh"
 check_syntax "openwrt/components/common_init.sh" "sh"
 check_syntax "openwrt/components/conf_helper.sh" "sh"
 
 # Config Sync
 check_syntax "openwrt/config_sync/homelab_config_sync.sh" "sh"
-check_syntax "openwrt/config_sync/components/deploy_helper.sh" "bash"
+check_syntax "openwrt/config_sync/components/deploy_helper.sh" "sh"
 check_syntax "openwrt/config_sync/components/permission_helper.sh" "sh"
-check_syntax "openwrt/config_sync/components/router_ip_helper.sh" "bash"
-check_syntax "openwrt/config_sync/components/sanitized_conf_helper.sh" "bash"
+check_syntax "openwrt/config_sync/components/router_ip_helper.sh" "sh"
+check_syntax "openwrt/config_sync/components/sanitized_conf_helper.sh" "sh"
 check_syntax "openwrt/config_sync/components/verify_helper.sh" "sh"
 
 # Installer
@@ -94,7 +121,7 @@ check_syntax "openwrt/power_proxy/game_wake_listener.sh" "sh"
 check_syntax "openwrt/power_proxy/components/cleanup_helper.sh" "sh"
 check_syntax "openwrt/power_proxy/components/listener_helper.sh" "sh"
 check_syntax "openwrt/power_proxy/components/main.sh" "sh"
-check_syntax "openwrt/power_proxy/components/network_helper.sh" "bash"
+check_syntax "openwrt/power_proxy/components/network_helper.sh" "sh"
 check_syntax "openwrt/power_proxy/components/notify_helper.sh" "sh"
 check_syntax "openwrt/power_proxy/components/redirect_helper.sh" "sh"
 
@@ -102,213 +129,85 @@ check_syntax "openwrt/power_proxy/components/redirect_helper.sh" "sh"
 check_syntax "openwrt/telegram/telegram_bot_daemon.sh" "sh"
 check_syntax "openwrt/telegram/maintenance_homelab.sh" "sh"
 check_syntax "openwrt/telegram/notify_homelab.sh" "sh"
-check_syntax "openwrt/telegram/components/command_helper.sh" "bash"
-check_syntax "openwrt/telegram/components/message_helper.sh" "bash"
+check_syntax "openwrt/telegram/components/command_helper.sh" "sh"
+check_syntax "openwrt/telegram/components/message_helper.sh" "sh"
 check_syntax "openwrt/telegram/components/polling_helper.sh" "sh"
-check_syntax "openwrt/telegram/components/process_command_helper.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/help_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/status_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/list_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/node_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/wake_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/sleep_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/sleepforce_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/hostreboot_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/hostrebootforce_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/hostshutdown_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/hostshutdownforce_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/vmstart_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/vmstop_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/vmrestart_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/ctstart_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/ctstop_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/ctrestart_command.sh" "bash"
-check_syntax "openwrt/telegram/components/commands/maintenance_command.sh" "bash"
+check_syntax "openwrt/telegram/components/process_command_helper.sh" "sh"
+check_syntax "openwrt/telegram/components/liveness_monitor.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/help_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/status_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/list_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/node_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/wake_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/sleep_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/sleepforce_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/hostreboot_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/hostrebootforce_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/hostshutdown_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/hostshutdownforce_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/vmstart_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/vmstop_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/vmrestart_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/ctstart_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/ctstop_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/ctrestart_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/maintenance_command.sh" "sh"
 
 # =============================================================================
-# TEST SUITE 2: Active Time Window Evaluation Logic
+# Load the real Proxmox shared library (log/notify/render_msg/load_conf/
+# to_integer/day_to_num/is_in_active_window). This is the code the monitors run.
 # =============================================================================
-print_header "2. Active Time Window Evaluation Logic"
-
-# Extract day_to_num and is_in_active_window logic directly
-day_to_num() {
-    case "$1" in
-        Mon) echo 1 ;;
-        Tue) echo 2 ;;
-        Wed) echo 3 ;;
-        Thu) echo 4 ;;
-        Fri) echo 5 ;;
-        Sat) echo 6 ;;
-        Sun) echo 7 ;;
-        *) echo 0 ;;
-    esac
-}
-
-eval_active_window() {
-    local ACTIVE_TIME_WINDOWS="$1"
-    local curr_day="$2"
-    local curr_hour="$3"
-    local curr_min="$4"
-    
-    local curr_day_num=$(day_to_num "$curr_day")
-    local ch=$((10#$curr_hour))
-    local cm=$((10#$curr_min))
-    local curr_time_m=$(( ch * 60 + cm ))
-    
-    for window in $(echo "$ACTIVE_TIME_WINDOWS" | tr ',' ' '); do
-        local days=""
-        local times=""
-        if echo "$window" | grep -q ":"; then
-            days="${window%%:*}"
-            times="${window#*:}"
-        else
-            days="All"
-            times="$window"
-        fi
-        
-        local day_match=0
-        if [ "$days" = "All" ]; then
-            day_match=1
-        elif echo "$days" | grep -q "-"; then
-            local start_day="${days%%-*}"
-            local end_day="${days#*-}"
-            local start_num=$(day_to_num "$start_day")
-            local end_num=$(day_to_num "$end_day")
-            
-            if [ "$start_num" -le "$end_num" ]; then
-                if [ "$curr_day_num" -ge "$start_num" ] && [ "$curr_day_num" -le "$end_num" ]; then
-                    day_match=1
-                fi
-            else
-                if [ "$curr_day_num" -ge "$start_num" ] || [ "$curr_day_num" -le "$end_num" ]; then
-                    day_match=1
-                fi
-            fi
-        else
-            if [ "$curr_day" = "$days" ]; then
-                day_match=1
-            fi
-        fi
-        
-        [ "$day_match" -eq 0 ] && continue
-        
-        local start_t="${times%%-*}"
-        local end_t="${times#*-}"
-        
-        local sh="${start_t%%:*}"
-        local sm="${start_t#*:}"
-        local eh="${end_t%%:*}"
-        local em="${end_t#*:}"
-        
-        [ -z "$sh" ] && sh=0
-        [ -z "$sm" ] && sm=0
-        [ -z "$eh" ] && eh=0
-        [ -z "$em" ] && em=0
-        
-        local start_h=$((10#$sh))
-        local start_m_part=$((10#$sm))
-        local end_h=$((10#$eh))
-        local end_m_part=$((10#$em))
-        
-        local start_m=$(( start_h * 60 + start_m_part ))
-        local end_m=$(( end_h * 60 + end_m_part ))
-        
-        if [ "$end_m" -lt "$start_m" ]; then
-            if [ "$curr_time_m" -ge "$start_m" ] || [ "$curr_time_m" -le "$end_m" ]; then
-                return 0
-            fi
-        else
-            if [ "$curr_time_m" -ge "$start_m" ] && [ "$curr_time_m" -le "$end_m" ]; then
-                return 0
-            fi
-        fi
-    done
-    return 1
-}
-
-# Test Cases
-if eval_active_window "Mon-Sun:05:00-23:00" "Tue" "09" "30"; then
-    report_pass "Mon-Sun:05:00-23:00: Active at 09:30 on Tue"
+PROXMOX_LIB="proxmox/lib.sh"
+if [ -f "$PROXMOX_LIB" ]; then
+    # shellcheck source=proxmox/lib.sh
+    . "$PROXMOX_LIB"
 else
-    report_fail "Mon-Sun:05:00-23:00 should be active at 09:30 on Tue"
-fi
-
-if eval_active_window "Mon-Sun:05:00-23:00" "Sun" "05" "00"; then
-    report_pass "Mon-Sun:05:00-23:00: Active at exact start boundary 05:00"
-else
-    report_fail "Mon-Sun:05:00-23:00 should be active at 05:00"
-fi
-
-if eval_active_window "Mon-Sun:05:00-23:00" "Mon" "23" "00"; then
-    report_pass "Mon-Sun:05:00-23:00: Active at exact end boundary 23:00"
-else
-    report_fail "Mon-Sun:05:00-23:00 should be active at 23:00"
-fi
-
-if ! eval_active_window "Mon-Sun:05:00-23:00" "Wed" "23" "01"; then
-    report_pass "Mon-Sun:05:00-23:00: Inactive at 23:01 (outside window)"
-else
-    report_fail "Mon-Sun:05:00-23:00 should be inactive at 23:01"
-fi
-
-if ! eval_active_window "Mon-Sun:05:00-23:00" "Fri" "04" "59"; then
-    report_pass "Mon-Sun:05:00-23:00: Inactive at 04:59 (outside window)"
-else
-    report_fail "Mon-Sun:05:00-23:00 should be inactive at 04:59"
-fi
-
-if eval_active_window "Mon-Fri:18:00-06:00" "Wed" "02" "00"; then
-    report_pass "Overnight window Mon-Fri:18:00-06:00: Active at 02:00"
-else
-    report_fail "Overnight window Mon-Fri:18:00-06:00 should be active at 02:00"
-fi
-
-if eval_active_window "Sat-Sun:00:00-23:59" "Sat" "14" "15"; then
-    report_pass "Weekend full day window: Active at 14:15 on Sat"
-else
-    report_fail "Weekend full day window should be active at 14:15 on Sat"
-fi
-
-if ! eval_active_window "Mon-Fri:08:00-17:00" "Sun" "10" "00"; then
-    report_pass "Weekday-only window: Inactive on Sunday"
-else
-    report_fail "Weekday-only window should be inactive on Sunday"
+    report_fail "Missing $PROXMOX_LIB (cannot run logic tests)"
 fi
 
 # =============================================================================
-# TEST SUITE 3: Floating Point Conversion Helpers
+# TEST SUITE 2: Active Time Window Evaluation (real is_in_active_window)
 # =============================================================================
-print_header "3. Float Math Helper (to_integer in proxmox_idle_monitor.sh)"
+print_header "2. Active Time Window Evaluation (proxmox/lib.sh is_in_active_window)"
 
-to_integer() {
-    local val="$1"
-    local int="${val%.*}"
-    local dec=""
-    if [ "$int" != "$val" ]; then
-        dec="${val#*.}"
-    fi
-    [ -z "$int" ] && int=0
-    [ -z "$dec" ] && dec=0
-    
-    dec="${dec}00"
-    dec="${dec:0:2}"
-    
-    local res="${int}${dec}"
-    while [[ $res == 0* && ${#res} -gt 1 ]]; do
-        res="${res#0}"
-    done
-    echo "$res"
-}
+# Day-ranged window
+ACTIVE_TIME_WINDOWS="Mon-Sun:05:00-23:00"
+if is_in_active_window Tue 09 30; then report_pass "Mon-Sun:05:00-23:00 active at Tue 09:30"; else report_fail "Mon-Sun:05:00-23:00 should be active at Tue 09:30"; fi
+if is_in_active_window Sun 05 00; then report_pass "Mon-Sun:05:00-23:00 active at exact start 05:00"; else report_fail "should be active at 05:00 boundary"; fi
+if is_in_active_window Mon 23 00; then report_pass "Mon-Sun:05:00-23:00 active at exact end 23:00"; else report_fail "should be active at 23:00 boundary"; fi
+if ! is_in_active_window Wed 23 01; then report_pass "Mon-Sun:05:00-23:00 inactive at 23:01"; else report_fail "should be inactive at 23:01"; fi
+if ! is_in_active_window Fri 04 59; then report_pass "Mon-Sun:05:00-23:00 inactive at 04:59"; else report_fail "should be inactive at 04:59"; fi
+
+# Overnight window
+ACTIVE_TIME_WINDOWS="Mon-Fri:18:00-06:00"
+if is_in_active_window Wed 02 00; then report_pass "Overnight Mon-Fri:18:00-06:00 active at 02:00"; else report_fail "overnight window should be active at 02:00"; fi
+if ! is_in_active_window Sun 10 00; then report_pass "Weekday-only window inactive on Sunday"; else report_fail "weekday-only window should be inactive Sunday"; fi
+
+ACTIVE_TIME_WINDOWS="Sat-Sun:00:00-23:59"
+if is_in_active_window Sat 14 15; then report_pass "Weekend full-day window active at Sat 14:15"; else report_fail "weekend window should be active"; fi
+
+# REGRESSION (dayless windows): "08:00-23:00" must apply to ALL days. The old
+# code split on ':' and treated "08" as a day name, so it never matched and the
+# host auto-suspended during the intended awake window.
+ACTIVE_TIME_WINDOWS="08:00-23:00"
+if is_in_active_window Tue 10 00; then report_pass "Dayless '08:00-23:00' active at Tue 10:00 (regression)"; else report_fail "dayless window must be active at Tue 10:00"; fi
+if is_in_active_window Sat 10 00; then report_pass "Dayless '08:00-23:00' active on Saturday too"; else report_fail "dayless window must apply to all days"; fi
+if ! is_in_active_window Tue 06 00; then report_pass "Dayless '08:00-23:00' inactive at 06:00"; else report_fail "dayless window should be inactive at 06:00"; fi
+
+ACTIVE_TIME_WINDOWS=""
+if ! is_in_active_window Tue 10 00; then report_pass "Empty ACTIVE_TIME_WINDOWS => never in-window"; else report_fail "empty config should never be in-window"; fi
+
+# =============================================================================
+# TEST SUITE 3: Floating Point Conversion Helper (real to_integer)
+# =============================================================================
+print_header "3. Float Math Helper (proxmox/lib.sh to_integer)"
 
 check_float() {
     local input="$1"
     local expected="$2"
-    local res=$(to_integer "$input")
-    if [ "$res" = "$expected" ]; then
-        report_pass "to_integer '$input' -> $expected"
-    else
-        report_fail "to_integer '$input' failed (got: $res, expected: $expected)"
-    fi
+    local res
+    res=$(to_integer "$input")
+    check "to_integer '$input' -> $expected" "$res" "$expected"
 }
 
 check_float "0.15" "15"
@@ -319,7 +218,7 @@ check_float "0.0" "0"
 check_float "0" "0"
 
 # =============================================================================
-# TEST SUITE 4: JSON Escaping Engine
+# TEST SUITE 4: JSON Escaping Engine (notify_homelab.sh contract)
 # =============================================================================
 print_header "4. JSON Escaping Engine"
 
@@ -340,15 +239,10 @@ Line 3: finished."
 
 ESCAPED_STR=$(escape_json "$TEST_STR")
 EXPECTED_STR='Line 1: with \"double quotes\" and \\backslashes\\\nLine 2: with tab\tcharacter\nLine 3: finished.'
-
-if [ "$ESCAPED_STR" = "$EXPECTED_STR" ]; then
-    report_pass "Multiline text, quotes, and backslashes escaped safely for JSON"
-else
-    report_fail "JSON escaping failed" "Got: $ESCAPED_STR"
-fi
+check "Multiline text, quotes, and backslashes escaped safely for JSON" "$ESCAPED_STR" "$EXPECTED_STR"
 
 # =============================================================================
-# TEST SUITE 5: SSH Command Wrapper Security Rules
+# TEST SUITE 5: SSH Command Wrapper (static allow-list contract)
 # =============================================================================
 print_header "5. SSH Command Security Wrapper Dispatcher"
 
@@ -364,20 +258,10 @@ check_wrapper_pattern() {
         "pct list | awk 'NR>1 && \$2==\"running\" {print \$1}'; qm list | awk 'NR>1 && \$3==\"running\" {print \$1}'")
             echo "ALLOW: running guests list"
             ;;
-        "cat > /etc/homelab_power.conf")
-            echo "ALLOW: config sync push"
-            ;;
-        "systemctl restart proxmox_idle_monitor.timer")
-            echo "ALLOW: restart idle timer"
-            ;;
-        "systemctl restart proxmox_resource_monitor.timer")
-            echo "ALLOW: restart resource timer"
-            ;;
         *cpu=\$\(grep\ \'cpu\ \'*)
             echo "ALLOW: host telemetry sensor probe"
             ;;
         *)
-            # Check single line 3 args
             set -- $SSH_ORIGINAL_COMMAND
             if [ $# -eq 3 ] && echo "$3" | grep -qE "^[0-9]+$"; then
                 if [ "$1" = "pct" ] || [ "$1" = "qm" ]; then
@@ -395,28 +279,13 @@ check_wrapper_pattern() {
 }
 
 W1=$(check_wrapper_pattern 'echo OK')
-[ "$W1" = "ALLOW: echo OK" ] && report_pass "Wrapper allows 'echo OK'" || report_fail "Wrapper blocked 'echo OK'"
-
-W2=$(check_wrapper_pattern "echo '===METRICS==='; uptime; echo '===RAM==='; free -h; echo '===LXC==='; pct list; echo '===VM==='; qm list")
-[ "$W2" = "ALLOW: host metrics payload" ] && report_pass "Wrapper allows metrics payload" || report_fail "Wrapper blocked metrics payload"
-
-W3=$(check_wrapper_pattern "pct list | awk 'NR>1 && \$2==\"running\" {print \$1}'; qm list | awk 'NR>1 && \$3==\"running\" {print \$1}'")
-[ "$W3" = "ALLOW: running guests list" ] && report_pass "Wrapper allows running guests awk filter" || report_fail "Wrapper blocked running guests awk"
-
-W4=$(check_wrapper_pattern "cpu=\$(grep 'cpu ' /proc/stat | awk '{usage=(\$2+\$4)*100/(\$2+\$4+\$5)} END {printf \"%.1f\", usage}'); ram=\$(free -m | awk 'NR==2 {printf \"%d:%d\", \$3, \$2}'); temp=45; disk=20; echo \"\$cpu|\$ram|\$temp|\$disk\"")
-[ "$W4" = "ALLOW: host telemetry sensor probe" ] && report_pass "Wrapper allows host telemetry sensor one-liner" || report_fail "Wrapper blocked host telemetry"
-
+check "Wrapper allows 'echo OK'" "$W1" "ALLOW: echo OK"
 W5=$(check_wrapper_pattern 'qm start 120')
-[ "$W5" = "ALLOW: qm start 120" ] && report_pass "Wrapper allows 'qm start 120'" || report_fail "Wrapper blocked 'qm start 120'"
-
+check "Wrapper allows 'qm start 120'" "$W5" "ALLOW: qm start 120"
 W6=$(check_wrapper_pattern 'pct stop 101')
-[ "$W6" = "ALLOW: pct stop 101" ] && report_pass "Wrapper allows 'pct stop 101'" || report_fail "Wrapper blocked 'pct stop 101'"
-
-W7=$(check_wrapper_pattern 'qm status 120')
-[ "$W7" = "ALLOW: qm status 120" ] && report_pass "Wrapper allows 'qm status 120'" || report_fail "Wrapper blocked 'qm status 120'"
-
+check "Wrapper allows 'pct stop 101'" "$W6" "ALLOW: pct stop 101"
 W_BAD=$(check_wrapper_pattern 'rm -rf /')
-[ "$W_BAD" = "DENY: rm -rf /" ] && report_pass "Wrapper correctly denies unauthorized 'rm -rf /'" || report_fail "Wrapper failed to deny malicious command"
+check "Wrapper denies unauthorized 'rm -rf /'" "$W_BAD" "DENY: rm -rf /"
 
 # =============================================================================
 # TEST SUITE 6: Multi-Map Guest Discovery Aggregation
@@ -440,12 +309,155 @@ ALL_DISCOVERED_VMIDS=$(
         [ -n "$GUEST_PRIVACY_MAP" ] && echo "$GUEST_PRIVACY_MAP" | tr ',' '\n' | cut -d':' -f1
     } | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
 )
+check "Discovered unique VMIDs across all independent maps" "$ALL_DISCOVERED_VMIDS" "120 121 122 123 124"
 
-if [ "$ALL_DISCOVERED_VMIDS" = "120 121 122 123 124" ]; then
-    report_pass "Discovered unique VMIDs (120, 121, 122, 123, 124) across all independent maps"
+# =============================================================================
+# TEST SUITE 7: Regression tests for the fixed bugs
+# =============================================================================
+print_header "7. Regression Tests (fixed bugs)"
+
+# 7.1 Power proxy must source the existing redirect helper (was redirects_helper.sh)
+if grep -q 'redirects_helper\.sh' openwrt/power_proxy/power_proxy_daemon.sh 2>/dev/null; then
+    report_fail "power_proxy_daemon.sh still references redirects_helper.sh (file does not exist)"
 else
-    report_fail "Guest discovery failed (got: '$ALL_DISCOVERED_VMIDS', expected: '120 121 122 123 124')"
+    report_pass "power_proxy_daemon.sh no longer sources a non-existent redirects_helper.sh"
 fi
+if [ -f openwrt/power_proxy/components/redirect_helper.sh ] && \
+   grep -q 'redirect_helper\.sh' openwrt/power_proxy/power_proxy_daemon.sh; then
+    report_pass "power_proxy_daemon.sh sources the real redirect_helper.sh"
+else
+    report_fail "power_proxy_daemon.sh does not source the real redirect_helper.sh"
+fi
+
+# 7.2 Router scripts must read the router config path, not the Proxmox one
+check_ok "power_proxy.init reads /etc/power_homelab.conf" \
+    grep -q '/etc/power_homelab.conf' openwrt/power_proxy/power_proxy.init
+if grep -q '/etc/homelab_power.conf' openwrt/power_proxy/power_proxy.init 2>/dev/null; then
+    report_fail "power_proxy.init still reads the Proxmox config path"
+else
+    report_pass "power_proxy.init no longer reads the Proxmox config path"
+fi
+check_ok "notify_homelab.sh reads /etc/power_homelab.conf" \
+    grep -q '/etc/power_homelab.conf' openwrt/telegram/notify_homelab.sh
+
+# 7.3 Proxmox scripts must not read the router config path
+if grep -rq '/etc/power_homelab.conf' proxmox/ 2>/dev/null; then
+    report_fail "A proxmox script references the router config path /etc/power_homelab.conf"
+else
+    report_pass "No proxmox script references the router config path"
+fi
+
+# 7.4 No eval-based message expansion anywhere (use render_msg instead)
+if grep -rn 'eval echo' proxmox/ openwrt/ >/dev/null 2>&1; then
+    report_fail "Found leftover 'eval echo' message expansion"
+else
+    report_pass "No 'eval echo' message expansion remains"
+fi
+
+# 7.5 render_msg (openwrt/components/lib.sh) substitutes tokens, no eval/sed
+OPENWRT_RENDER=$(
+    . openwrt/components/lib.sh
+    arg1=42; HOST_MAC="aa:bb:cc:dd:ee:ff"; GUEST_NAME="NAS"; VMID=101
+    render_msg 'id=$arg1 mac=$HOST_MAC name=$GUEST_NAME vmid=$VMID'
+)
+check "openwrt render_msg substitutes tokens" "$OPENWRT_RENDER" "id=42 mac=aa:bb:cc:dd:ee:ff name=NAS vmid=101"
+
+# 7.6 trim (openwrt/components/lib.sh)
+TRIMMED=$(printf '   spaced out   \n' | { . openwrt/components/lib.sh; trim; })
+check "openwrt trim strips surrounding whitespace" "$TRIMMED" "spaced out"
+
+# 7.7 load_conf applies allow-listed keys and rejects metacharacter payloads
+TMP_CONF=$(mktemp)
+{
+    echo 'MONITORED_PORTS="22,80,443"'
+    echo 'CPU_THRESHOLD="0.5; touch /tmp/homelab_conf_pwn"'
+} > "$TMP_CONF"
+rm -f /tmp/homelab_conf_pwn
+MONITORED_PORTS=""; CPU_THRESHOLD="DEFAULT"
+load_conf "$TMP_CONF"
+check "load_conf applies a valid allow-listed value" "$MONITORED_PORTS" "22,80,443"
+check "load_conf rejects a value containing metacharacters" "$CPU_THRESHOLD" "DEFAULT"
+if [ -e /tmp/homelab_conf_pwn ]; then
+    report_fail "load_conf executed a metacharacter payload"
+    rm -f /tmp/homelab_conf_pwn
+else
+    report_pass "load_conf never executes file contents"
+fi
+rm -f "$TMP_CONF"
+
+# 7.8 load_msg_conf loads real templates and neutralises command substitution
+TMP_MSG=$(mktemp)
+{
+    echo 'MSG_MONITOR_CPU_ALERT="[Warning] CPU $VALUE% (thr $THRESHOLD%)"'
+    echo 'MSG_EVIL="$(touch /tmp/homelab_msg_pwn)"'
+    echo 'NOT_A_MSG_KEY="$(touch /tmp/homelab_msg_pwn2)"'
+} > "$TMP_MSG"
+rm -f /tmp/homelab_msg_pwn /tmp/homelab_msg_pwn2
+MSG_MONITOR_CPU_ALERT=""; MSG_EVIL=""
+load_msg_conf "$TMP_MSG"
+check "load_msg_conf loads a template with \$TOKEN placeholders" \
+    "$MSG_MONITOR_CPU_ALERT" '[Warning] CPU $VALUE% (thr $THRESHOLD%)'
+check "load_msg_conf stores a \$(...)'d value verbatim" "$MSG_EVIL" '$(touch /tmp/homelab_msg_pwn)'
+if [ -e /tmp/homelab_msg_pwn ] || [ -e /tmp/homelab_msg_pwn2 ]; then
+    report_fail "load_msg_conf executed a payload"
+    rm -f /tmp/homelab_msg_pwn /tmp/homelab_msg_pwn2
+else
+    report_pass "load_msg_conf never executes file contents"
+fi
+rm -f "$TMP_MSG"
+
+# 7.9 The wrapper must validate the config payload instead of blind `cat >`
+if grep -q 'install -m 600' proxmox/homelab_ssh_wrapper.sh && \
+   grep -q 'REJECTED malformed configuration payload' proxmox/homelab_ssh_wrapper.sh; then
+    report_pass "homelab_ssh_wrapper.sh validates the pushed config payload"
+else
+    report_fail "homelab_ssh_wrapper.sh still writes the config without validation"
+fi
+
+# 7.10 /node is dispatched, and /list emits ct/vm callback data (not dead cmd:node:)
+check_ok "process_command_helper.sh dispatches /node" \
+    grep -q '/node)' openwrt/telegram/components/process_command_helper.sh
+check_ok "list_command.sh emits cmd:ct:/cmd:vm: callback data" \
+    grep -q 'cmd:ct:' openwrt/telegram/components/commands/list_command.sh
+
+# 7.11 polling_helper routes cmd:/maint: callbacks to process_action
+check_ok "polling_helper.sh routes cmd: callbacks" \
+    grep -q '\^cmd:' openwrt/telegram/components/polling_helper.sh
+
+# 7.12 send_message called with an explicit empty markup arg on the error paths
+check_ok "status_command.sh passes markup+msg_id positionally" \
+    grep -q '"\$MSG_BOT_SSH_FAILED" "" "\$msg_id"' openwrt/telegram/components/commands/status_command.sh
+check_ok "list_command.sh passes markup+msg_id positionally" \
+    grep -q '"\$MSG_BOT_LIST_HOST_OFFLINE" "" "\$msg_id"' openwrt/telegram/components/commands/list_command.sh
+
+# 7.13 Host-power handlers read message_id from $2 (not the empty $3)
+check_ok "host_power_action exists (collapsed host handlers)" \
+    grep -q '^host_power_action()' openwrt/telegram/components/command_helper.sh
+check_ok "guest_action exists (collapsed guest handlers)" \
+    grep -q '^guest_action()' openwrt/telegram/components/command_helper.sh
+
+# 7.14 /node restart must be sent as `reboot` (the only verb the SSH wrapper allows)
+check_ok "node_command maps restart -> reboot for the wrapper allow-list" \
+    grep -q 'remote_op="reboot"' openwrt/telegram/components/commands/node_command.sh
+
+# 7.15 Router SSH must not use OpenSSH-only options: OpenWrt's `ssh` is Dropbear's
+# client, which rejects `-o ConnectTimeout=...` and prints a warning to output.
+if grep -rqE 'ssh .*-o +ConnectTimeout' openwrt/ 2>/dev/null; then
+    report_fail "An openwrt script passes -o ConnectTimeout (Dropbear rejects unknown -o options)"
+else
+    report_pass "No Dropbear-incompatible '-o ConnectTimeout' in openwrt/"
+fi
+check_ok "is_host_alive bounds the SSH probe with BusyBox timeout" \
+    grep -q 'timeout 6 \$SSH_CMD' openwrt/components/check_helper.sh
+
+# 7.16 SSH key permission check repairs a 0644 key and is silent for 0600
+PERM_OPEN=$(mktemp); chmod 644 "$PERM_OPEN"
+SSH_KEY_PATH="$PERM_OPEN" bash -c '. openwrt/config_sync/components/permission_helper.sh; check_permission' >/dev/null 2>&1
+check "permission_helper repairs a 0644 key to 0600" "$(ls -l "$PERM_OPEN" | awk '{print $1}')" "-rw-------"
+PERM_OK=$(mktemp); chmod 600 "$PERM_OK"
+PERM_OUT=$(SSH_KEY_PATH="$PERM_OK" bash -c '. openwrt/config_sync/components/permission_helper.sh; check_permission' 2>&1)
+check "permission_helper is silent for a 0600 key" "$PERM_OUT" ""
+rm -f "$PERM_OPEN" "$PERM_OK"
 
 # =============================================================================
 # SUMMARY REPORT

@@ -6,6 +6,11 @@
 
 # Default Config Path
 CONF="/etc/homelab_power.conf"
+# Notification messages config (deployed to PVE by the router's config_sync tool).
+MSG_CONF="/etc/homelab_messages.conf"
+
+# Syslog tag for this monitor's log()/notify() calls (see lib.sh)
+LOG_TAG="proxmox-idle-monitor"
 
 # Default fallback values
 CPU_THRESHOLD="0.15"
@@ -26,169 +31,35 @@ MSG_PROXMOX_GUEST_STOPPED='[Guest Idle Sleep] Service $GUEST_NAME (VMID $VMID) w
 MSG_PROXMOX_HOST_SLEEPING='[Proxmox Host Sleeping] Host is entering S3 Suspend-to-RAM. All system states successfully saved!'
 MSG_PROXMOX_HOST_AWAKE='[Proxmox Host Awake] Host successfully woke up from ACPI S3 sleep. Restoring all guest VMs...'
 
-# Load configuration if exists
-if [ -f "$CONF" ]; then
-    source "$CONF"
-fi
+# --- Shared library (hardened config loaders + helpers) ---
+# Installed to /usr/local/lib/homelab/lib.sh; fall back to the script's own
+# directory so it can also be exercised straight from the repository.
+LIB_FILE="/usr/local/lib/homelab/lib.sh"
+[ -f "$LIB_FILE" ] || LIB_FILE="$(dirname "$0")/lib.sh"
+# shellcheck source=lib.sh
+. "$LIB_FILE"
+
+# Load configuration if exists. load_conf() only applies allowlisted "KEY="
+# assignments after strict validation - it never `source`s the file, because
+# doing so as root would let anyone holding the router SSH key run arbitrary
+# code as root on the Proxmox host.
+load_conf "$CONF"
 
 # Load messages configuration if exists
-MSG_CONF="/etc/homelab_messages.conf"
-if [ -f "$MSG_CONF" ]; then
-    source "$MSG_CONF"
-fi
+load_msg_conf "$MSG_CONF"
 
-# --- POSIX Float Math Helpers (Avoids bc dependency) ---
-to_integer() {
-    local val="$1"
-    local int="${val%.*}"
-    local dec=""
-    if [ "$int" != "$val" ]; then
-        dec="${val#*.}"
-    fi
-    [ -z "$int" ] && int=0
-    [ -z "$dec" ] && dec=0
-    
-    dec="${dec}00"
-    dec="${dec:0:2}"
-    
-    local res="${int}${dec}"
-    while [[ $res == 0* && ${#res} -gt 1 ]]; do
-        res="${res#0}"
-    done
-    echo "$res"
-}
-
-# --- Smart Wake Scheduling Helpers ---
-day_to_num() {
-    case "$1" in
-        Mon) echo 1 ;;
-        Tue) echo 2 ;;
-        Wed) echo 3 ;;
-        Thu) echo 4 ;;
-        Fri) echo 5 ;;
-        Sat) echo 6 ;;
-        Sun) echo 7 ;;
-        *) echo 0 ;;
-    esac
-}
-
-is_in_active_window() {
-    [ -z "$ACTIVE_TIME_WINDOWS" ] && return 1
-    
-    local curr_day=$(LC_ALL=C date +%a)
-    local curr_day_num=$(day_to_num "$curr_day")
-    local curr_hour=$(date +%H)
-    local curr_min=$(date +%M)
-    
-    # Safely convert to integer minutes of day using base-10
-    local ch=$((10#$curr_hour))
-    local cm=$((10#$curr_min))
-    local curr_time_m=$(( ch * 60 + cm ))
-    
-    for window in $(echo "$ACTIVE_TIME_WINDOWS" | tr ',' ' '); do
-        local days=""
-        local times=""
-        if echo "$window" | grep -q ":"; then
-            days="${window%%:*}"
-            times="${window#*:}"
-        else
-            days="All"
-            times="$window"
-        fi
-        
-        # Check day match
-        local day_match=0
-        if [ "$days" = "All" ]; then
-            day_match=1
-        elif echo "$days" | grep -q "-"; then
-            local start_day="${days%%-*}"
-            local end_day="${days#*-}"
-            local start_num=$(day_to_num "$start_day")
-            local end_num=$(day_to_num "$end_day")
-            
-            if [ "$start_num" -le "$end_num" ]; then
-                if [ "$curr_day_num" -ge "$start_num" ] && [ "$curr_day_num" -le "$end_num" ]; then
-                    day_match=1
-                fi
-            else
-                if [ "$curr_day_num" -ge "$start_num" ] || [ "$curr_day_num" -le "$end_num" ]; then
-                    day_match=1
-                fi
-            fi
-        else
-            if [ "$curr_day" = "$days" ]; then
-                day_match=1
-            fi
-        fi
-        
-        [ "$day_match" -eq 0 ] && continue
-        
-        # Parse time range (e.g. 05:00-23:00)
-        # NOTE: %%-* would greedily strip too much (e.g. "05:00-23:00" -> "05")
-        # Use cut to safely split on the hyphen separating HH:MM-HH:MM
-        local start_t
-        local end_t
-        start_t=$(echo "$times" | cut -d'-' -f1)
-        end_t=$(echo "$times" | cut -d'-' -f2)
-        
-        local sh="${start_t%%:*}"
-        local sm="${start_t#*:}"
-        local eh="${end_t%%:*}"
-        local em="${end_t#*:}"
-        
-        [ -z "$sh" ] && sh=0
-        [ -z "$sm" ] && sm=0
-        [ -z "$eh" ] && eh=0
-        [ -z "$em" ] && em=0
-        
-        local start_h=$((10#$sh))
-        local start_m_part=$((10#$sm))
-        local end_h=$((10#$eh))
-        local end_m_part=$((10#$em))
-        
-        local start_m=$(( start_h * 60 + start_m_part ))
-        local end_m=$(( end_h * 60 + end_m_part ))
-        
-        if [ "$end_m" -lt "$start_m" ]; then
-            # Window spans midnight (e.g. 18:00-05:00)
-            if [ "$curr_time_m" -ge "$start_m" ] || [ "$curr_time_m" -le "$end_m" ]; then
-                return 0
-            fi
-        else
-            # Normal window within same day (e.g. 05:00-23:00)
-            if [ "$curr_time_m" -ge "$start_m" ] && [ "$curr_time_m" -le "$end_m" ]; then
-                return 0
-            fi
-        fi
-    done
-    
-    return 1
-}
-
-# Log helper
-log() {
-    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-    echo "$msg" >> "$LOG_FILE"
-    if [ "$ENABLE_SYSLOG" -eq 1 ]; then
-        logger -t "proxmox-idle-monitor" "$1"
-    fi
-    echo "$msg"
-}
-
-# Notification helper
-notify() {
-    local msg="$1"
-    log "NOTIFICATION: $msg"
-    
-    if [ -n "$NOTIFICATION_URL" ]; then
-        curl -s --connect-timeout 2 --max-time 5 -X POST \
-            --data-urlencode "msg=$msg" \
-            "$NOTIFICATION_URL" >/dev/null &
-    fi
-}
+# --- Helper functions (log, notify, render_msg, to_integer, day_to_num,
+# --- is_in_active_window, load_conf) live in proxmox/lib.sh.
 
 # Ensure log file exists
 touch "$LOG_FILE"
+
+# --- Single-instance lock (task 2.2) ---
+# This script is launched both by proxmox_idle_monitor.timer and on demand by
+# the Telegram command handlers; two concurrent runs could double-suspend
+# guests. util-linux flock is present on Proxmox VE.
+exec 9>/run/proxmox_idle_monitor.lock
+flock -w 5 9 || { log "another instance is running; exiting"; exit 0; }
 
 # Parse arguments
 FORCE_SLEEP=0
@@ -243,7 +114,30 @@ if [ -n "$GUEST_ORCHESTRATION_MAP" ]; then
         GUEST_IP=$(echo "$entry" | cut -d':' -f2)
         PORT_RAW=$(echo "$entry" | cut -d':' -f3)
         TIMEOUT_MIN=$(echo "$entry" | cut -d':' -f4)
-        
+
+        # --- Validate the map entry (task 2.8) ---
+        # A malformed entry must never reach the arithmetic below: "abc" would
+        # throw "integer expression expected" and could keep the host awake
+        # forever. Skip bad entries with a warning instead.
+        if ! echo "$VMID" | grep -qE '^[0-9]+$'; then
+            log "WARNING: Skipping malformed GUEST_ORCHESTRATION_MAP entry '$entry' (invalid VMID)."
+            continue
+        fi
+        if ! echo "$GUEST_IP" | grep -qE '^[0-9A-Za-z._:-]+$'; then
+            log "WARNING: Skipping malformed GUEST_ORCHESTRATION_MAP entry '$entry' (invalid IP/host)."
+            continue
+        fi
+        if ! echo "$PORT_RAW" | grep -qE '^[0-9]+(/[A-Za-z]+)?(\+[0-9]+(/[A-Za-z]+)?)*$'; then
+            log "WARNING: Skipping malformed GUEST_ORCHESTRATION_MAP entry '$entry' (invalid port spec)."
+            continue
+        fi
+        # TIMEOUT_MIN must be a non-negative integer; otherwise default to 0
+        # (monitor-only mode).
+        if ! echo "$TIMEOUT_MIN" | grep -qE '^[0-9]+$'; then
+            log "WARNING: GUEST_ORCHESTRATION_MAP entry '$entry' has an invalid idle timeout '${TIMEOUT_MIN}'; defaulting to 0."
+            TIMEOUT_MIN=0
+        fi
+
         GUEST_RUNNING=0
         if pct status "$VMID" >/dev/null 2>&1; then
             if [ "$(pct status "$VMID" | awk '{print $2}')" = "running" ]; then
@@ -337,21 +231,21 @@ if [ -n "$GUEST_ORCHESTRATION_MAP" ]; then
                                 if [ "$LXC_SUSPEND_METHOD" = "suspend" ]; then
                                     log "Suspending LXC [$VMID]..."
                                     pct suspend "$VMID"
-                                    notify "$(eval echo \"$MSG_PROXMOX_GUEST_SUSPENDED\")"
+                                    notify "$(render_msg "$MSG_PROXMOX_GUEST_SUSPENDED")"
                                 else
                                     log "Stopping LXC [$VMID]..."
                                     pct stop "$VMID"
-                                    notify "$(eval echo \"$MSG_PROXMOX_GUEST_STOPPED\")"
+                                    notify "$(render_msg "$MSG_PROXMOX_GUEST_STOPPED")"
                                 fi
                             else
                                 if [ "$VM_SUSPEND_METHOD" = "suspend" ]; then
                                     log "Suspending VM [$VMID]..."
                                     qm suspend "$VMID" --todisk 0
-                                    notify "$(eval echo \"$MSG_PROXMOX_GUEST_SUSPENDED\")"
+                                    notify "$(render_msg "$MSG_PROXMOX_GUEST_SUSPENDED")"
                                 else
                                     log "Shutting down VM [$VMID]..."
                                     qm shutdown "$VMID"
-                                    notify "$(eval echo \"$MSG_PROXMOX_GUEST_STOPPED\")"
+                                    notify "$(render_msg "$MSG_PROXMOX_GUEST_STOPPED")"
                                 fi
                             fi
                         else

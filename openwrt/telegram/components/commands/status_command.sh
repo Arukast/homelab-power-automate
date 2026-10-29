@@ -1,4 +1,8 @@
-#!/bin/bash
+#!/bin/sh
+# =============================================================================
+# /status Bot Command Handler
+# File: /usr/bin/telegram_components/commands/status_command.sh
+# =============================================================================
 
 status_command() {
     local chat_id="$1"
@@ -14,9 +18,11 @@ status_command() {
     fi
 
     # Host is online, gather all metrics in a single SSH connection payload!
-    local metrics_payload=$($SSH_CMD "echo '===METRICS==='; uptime; echo '===RAM==='; free -h; echo '===LXC==='; pct list; echo '===VM==='; qm list" 2>/dev/null)
-    if [ $? -ne 0 ] || [ -z "$metrics_payload" ]; then
-        send_message "$chat_id" "$MSG_BOT_SSH_FAILED" "$msg_id"
+    local metrics_payload rc
+    metrics_payload=$($SSH_CMD "echo '===METRICS==='; uptime; echo '===RAM==='; free -h; echo '===LXC==='; pct list; echo '===VM==='; qm list" 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$metrics_payload" ]; then
+        send_message "$chat_id" "$MSG_BOT_SSH_FAILED" "" "$msg_id"
         return
     fi
 

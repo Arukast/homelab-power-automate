@@ -1,17 +1,23 @@
-#!/bin/bash
+#!/bin/sh
+# =============================================================================
+# /list Bot Command Handler
+# File: /usr/bin/telegram_components/commands/list_command.sh
+# =============================================================================
 
 list_command() {
     local chat_id="$1"
     local msg_id="$2"
 
     if ! is_host_alive; then
-        send_message "$chat_id" "$MSG_BOT_LIST_HOST_OFFLINE" "$msg_id"
+        send_message "$chat_id" "$MSG_BOT_LIST_HOST_OFFLINE" "" "$msg_id"
         return
     fi
 
-    local payload=$($SSH_CMD "echo '===LXC==='; pct list; echo '===VM==='; qm list" 2>/dev/null)
-    if [ $? -ne 0 ] || [ -z "$payload" ]; then
-        send_message "$chat_id" "$MSG_BOT_SSH_FAILED" "$msg_id"
+    local payload rc
+    payload=$($SSH_CMD "echo '===LXC==='; pct list; echo '===VM==='; qm list" 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$payload" ]; then
+        send_message "$chat_id" "$MSG_BOT_SSH_FAILED" "" "$msg_id"
         return
     fi
 
@@ -47,9 +53,9 @@ ${vms}"
         flag && NR>2 && $1 != "VMID" && $1 != "" {
             vmid = $1; status = $2; name = $3;
             btn_text = (status == "running" ? "🛑 " name : "▶️ " name);
-            # Format: cmd:node:vmid:op
-            cmd = (status == "running" ? "cmd:node:" vmid ":stop" : "cmd:node:" vmid ":start");
-            printf "[{\"text\":\"%s\",\"callback_data\":\"%s\"}]", btn_text, cmd
+            # Format: cmd:ct:vmid:op  (reuses process_action vm|ct branch)
+            cmd = (status == "running" ? "cmd:ct:" vmid ":stop" : "cmd:ct:" vmid ":start");
+            printf "[{\"text\":\"%s\",\"callback_data\":\"%s\"}]\n", btn_text, cmd
         }
     ' | tr '\n' ',' | sed 's/,$//')
 
@@ -58,9 +64,9 @@ ${vms}"
         flag && NR>2 && $1 != "VMID" && $1 != "" {
             vmid = $1; name = $2; status = $3;
             btn_text = (status == "running" ? "🛑 " name : "▶️ " name);
-            # Format: cmd:node:vmid:op
-            cmd = (status == "running" ? "cmd:node:" vmid ":stop" : "cmd:node:" vmid ":start");
-            printf "[{\"text\":\"%s\",\"callback_data\":\"%s\"}]", btn_text, cmd
+            # Format: cmd:vm:vmid:op  (reuses process_action vm|ct branch)
+            cmd = (status == "running" ? "cmd:vm:" vmid ":stop" : "cmd:vm:" vmid ":start");
+            printf "[{\"text\":\"%s\",\"callback_data\":\"%s\"}]\n", btn_text, cmd
         }
     ' | tr '\n' ',' | sed 's/,$//')
 
@@ -75,8 +81,10 @@ ${vms}"
 
     local markup=""
     if [ -n "$all_buttons" ]; then
-        local list_footer_markup=$(get_markup "list")
-        markup="{\"inline_keyboard\":[[$all_buttons],$(echo "$list_footer_markup" | jq -c '.inline_keyboard[] | .[]' | sed 's/\]\[/,/g')]}"
+        # Constant footer row (mirrors the get_markup "list" branch). Emitted
+        # directly so the command has no jq (or sed) dependency.
+        local list_footer='[{"text": "Status", "callback_data": "/status"}, {"text": "Maint", "callback_data": "/maintenance status"}]'
+        markup="{\"inline_keyboard\":[${all_buttons},${list_footer}]}"
     fi
 
     send_message "$chat_id" "$list_msg" "$markup" "$msg_id"

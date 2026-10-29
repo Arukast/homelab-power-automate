@@ -80,29 +80,10 @@ GUEST_ORCHESTRATION_MAP=""
 # on Proxmox before shutting down!
 EXEMPT_SHUTDOWN_GUESTS=""
 
-# --- Waking Web Server Security ---
-# Passcode required on the Glassmorphic waking screen to allow Wake-on-LAN commands.
-# This prevents unauthorized visitors (from public Tailscale Funnel) from waking your homelab.
-WAKE_PASSCODE="YOUR_SECURE_PASSCODE"
-
-# --- Two-Tier Portal Access Passcodes ---
-# Passcode required to unlock and display the main Unified Dashboard itself.
-# Leave PORTAL_PRIVATE_PASSCODE blank to give private network instant passcode-free access inside the LAN/Tailscale.
-PORTAL_FUNNEL_PASSCODE="YOUR_FUNNEL_PORTAL_PASSCODE"
-PORTAL_PRIVATE_PASSCODE=""
-
-# --- Privacy Subnets & Filters ---
-# Subnets that represent your secure private/admin network (LAN and Tailscale range).
-# Clients connecting from outside these ranges (e.g. friends over external links) will have private guests hidden.
-PRIVATE_SUBNETS="192.168.11.0/24,100.64.0.0/10"
-
-# Mappings of Guest VMIDs to their privacy level: 'public' (visible to everyone) or 'private' (visible only to private network).
-GUEST_PRIVACY_MAP="120:private,122:public"
-
 # --- Anti-Accidental Wake Port Listeners ---
 # Enable or disable the raw TCP/UDP port Wake-on-Demand listeners on the router.
 # Set to "0" (Recommended) to prevent background internet port scans or client server list pings from waking guests.
-# If "0", guests are safely woken ONLY via the secure Web Page or Telegram Bot.
+# If "0", guests are safely woken ONLY via the Telegram Bot.
 ENABLE_PORT_WAKE_LISTENERS="0"
 
 # --- Discord Webhook Notifications (Optional) ---
@@ -111,22 +92,11 @@ ENABLE_PORT_WAKE_LISTENERS="0"
 # e.g., "https://discord.com/api/webhooks/123/abc,https://discord.com/api/webhooks/456/def"
 DISCORD_WEBHOOK_URL=""
 
-# --- Multi-Tenant Guest Waking Security & Naming Maps ---
-# Mappings of Guest VMIDs to their specific friendly names and access passcodes.
-# The Waking Web Server is fully generic and automatically adapts to any service defined here!
-# For example, adding "125:Valheim" to GUEST_NAME_MAP and "125:odinpass" to GUEST_PASSCODE_MAP
-# will instantly make http://router/?service=valheim (or ?vmid=125) render a customized
-# "Valheim Verification" page prompting for "odinpass", with ZERO code changes!
-# Format: "VMID:VALUE,VMID:VALUE"
+# --- Multi-Tenant Guest Service Names ---
+# Mapping of Guest VMIDs to their friendly service names. Used to label guest
+# notifications (e.g. "Minecraft") instead of showing a bare VMID.
+# Format: "VMID:NAME,VMID:NAME"
 GUEST_NAME_MAP="120:Minecraft,122:Unturned"
-GUEST_PASSCODE_MAP="120:mcpass,122:unturnedpass"
-GUEST_MESSAGE_MAP="120:Welcome to Minecraft!,122:Welcome to Unturned!"
-
-# Mappings of Guest VMIDs to their custom Web Interface redirect ports.
-# If configured, clicking 'Open Web Interface' will dynamically redirect to this port.
-# Format: "VMID:PORT,VMID:PORT"
-# Leave blank or omit for standard name-based fallback matching or port-free requests.
-GUEST_PORT_MAP=""
 
 # --- Proxmox Host Idle Detection & Suspension Settings ---
 # These parameters will be synchronized to Proxmox /etc/power_homelab.conf

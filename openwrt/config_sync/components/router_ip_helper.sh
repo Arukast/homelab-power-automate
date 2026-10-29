@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 get_router_ip() {
     ROUTER_IP=$(ip route get "$HOST_IP" 2>/dev/null | grep -oE "src [0-9.]+" | awk '{print $2}')

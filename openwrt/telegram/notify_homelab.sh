@@ -4,7 +4,10 @@
 # File: /usr/bin/homelab_notify.sh
 # =============================================================================
 
-CONF="/etc/homelab_power.conf"
+# Router-side configuration (the installed path). /etc/homelab_power.conf is the
+# Proxmox-side file and does not exist on the router, so reading it here left
+# BOT_TOKEN/DISCORD_WEBHOOK_URL empty and silently disabled all notifications.
+CONF="/etc/power_homelab.conf"
 if [ -f "$CONF" ]; then
     . "$CONF"
 fi
@@ -40,13 +43,13 @@ if [ -n "$BOT_TOKEN" ] && [ "$BOT_TOKEN" != "YOUR_TELEGRAM_BOT_TOKEN" ]; then
         fi
         
         (
-            resp=$(curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            resp=$(curl -s --connect-timeout 3 --max-time 10 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
                 --data-urlencode "chat_id=${chat}" \
                 --data-urlencode "text=${MSG}" \
                 --data-urlencode "parse_mode=Markdown")
             # If Markdown parsing fails (e.g. unescaped entities/error 400), retry without parse_mode
             if ! echo "$resp" | grep -q '"ok":true'; then
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                curl -s --connect-timeout 3 --max-time 10 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
                     --data-urlencode "chat_id=${chat}" \
                     --data-urlencode "text=${MSG}" >/dev/null
             fi
@@ -77,7 +80,7 @@ if [ "$DISABLE_NOTIFICATIONS" != "1" ] && [ -n "$DISCORD_WEBHOOK_URL" ]; then
     
     for url in $(echo "$DISCORD_WEBHOOK_URL" | tr ',' ' '); do
         if [ -n "$url" ]; then
-            curl -s -H "Content-Type: application/json" -X POST -d "$payload" "$url" >/dev/null &
+            curl -s --connect-timeout 3 --max-time 10 -H "Content-Type: application/json" -X POST -d "$payload" "$url" >/dev/null &
         fi
     done
 fi

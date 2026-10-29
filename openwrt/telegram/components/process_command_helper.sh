@@ -1,6 +1,36 @@
-#!/bin/bash
+#!/bin/sh
+# =============================================================================
+# OpenWrt Telegram Bot Command Processor
+# File: /usr/bin/telegram_components/process_command_helper.sh
+# =============================================================================
 
-#!/bin/bash
+# -----------------------------------------------------------------------------
+# Command dispatch table:  "<command>|<handler>|<pass_arg1>"
+#   <command>   : slash command name without the leading '/'
+#   <handler>   : handler function to invoke
+#   <pass_arg1> : 1 → call handler with (chat_id, msg_id, arg1); 0 → (chat_id, msg_id)
+# Multi-argument commands (/node, /maintenance) are handled explicitly below.
+# -----------------------------------------------------------------------------
+CMD_DISPATCH_TABLE='
+help|help_command|0
+start|help_command|0
+status|status_command|0
+wake|wake_command|0
+wake_proxmox|wake_command|0
+sleep|sleep_command|0
+sleepforce|sleepforce_command|0
+hostshutdown|hostshutdown_command|0
+hostshutdownforce|hostshutdownforce_command|0
+hostreboot|hostreboot_command|0
+hostrebootforce|hostrebootforce_command|0
+list|list_command|0
+ctstart|ctstart_command|1
+ctstop|ctstop_command|1
+ctrestart|ctrestart_command|1
+vmstart|vmstart_command|1
+vmstop|vmstop_command|1
+vmrestart|vmrestart_command|1
+'
 
 # Main Command Processor
 process_command() {
@@ -9,91 +39,64 @@ process_command() {
     local msg_id="$3"
 
     # Extract action and arguments
-    local action_raw=$(echo "$cmd" | awk '{print $1}')
+    local action_raw
+    action_raw=$(echo "$cmd" | awk '{print $1}')
     # Strip bot username suffix if present (e.g., /status@MyBot -> /status)
-    local action=$(echo "$action_raw" | cut -d'@' -f1 | tr 'A-Z' 'a-z')
-    local arg1=$(echo "$cmd" | awk '{print $2}')
+    local action
+    action=$(echo "$action_raw" | cut -d'@' -f1 | tr 'A-Z' 'a-z')
+    local arg1
+    arg1=$(echo "$cmd" | awk '{print $2}')
 
+    # Commands that consume more than a single argument are dispatched here.
     case "$action" in
-        /start|/help)
-            help_command "$chat_id" "$msg_id"
-            ;;
-
-        /status)
-            status_command "$chat_id" "$msg_id"
-            ;;
-
-        /wake|/wake_proxmox)
-            wake_command "$chat_id" "$msg_id"
-            ;;
-
-        /sleep)
-            sleep_command "$chat_id" "$msg_id"
-            ;;
-
-        /sleepforce)
-            sleepforce_command "$chat_id" "$msg_id"
-            ;;
-
-        /hostshutdown)
-            hostshutdown_command "$chat_id" "$msg_id"
-            ;;
-
-        /hostshutdownforce)
-            hostshutdownforce_command "$chat_id" "$msg_id"
-            ;;
-
-        /hostreboot)
-            hostreboot_command "$chat_id" "$msg_id"
-            ;;
-
-        /hostrebootforce)
-            hostrebootforce_command "$chat_id" "$msg_id"
-            ;;
-
-        /list)
-            list_command "$chat_id" "$msg_id"
-            ;;
-
-        /ctstart)
-            ctstart_command "$chat_id" "$msg_id" "$arg1"
-            ;;
-
-        /ctstop)
-            ctstop_command "$chat_id" "$msg_id" "$arg1"
-            ;;
-
-        /ctrestart)
-            ctrestart_command "$chat_id" "$msg_id" "$arg1"
-            ;;
-
-        /vmstart)
-            vmstart_command "$chat_id" "$msg_id" "$arg1"
-            ;;
-
-        /vmstop)
-            vmstop_command "$chat_id" "$msg_id" "$arg1"
-            ;;
-
-        /vmrestart)
-            vmrestart_command "$chat_id" "$msg_id" "$arg1"
-            ;;
-
         /maintenance)
-            # Use all remaining arguments for maintenance (e.g., /maintenance system on)
-            local full_cmd=$(echo "$cmd" | cut -d' ' -f2-)
-            # Pass arguments properly
+            # /maintenance [sub_cmd] [arg...]
+            local full_cmd
+            full_cmd=$(echo "$cmd" | cut -d' ' -f2-)
             if [ -z "$full_cmd" ]; then
                 maintenance_command "$chat_id" "$msg_id"
             else
                 maintenance_command "$chat_id" "$msg_id" $full_cmd
             fi
+            return
             ;;
 
-        *)
-            send_message "$chat_id" "$MSG_BOT_UNKNOWN_COMMAND"
+        /node)
+            # /node <vm|ct> <vmid> <start|stop|restart>
+            # node_command signature: (chat_id, message_id, operation, type, vmid)
+            local node_type
+            node_type=$(echo "$cmd" | awk '{print $2}')
+            local node_vmid
+            node_vmid=$(echo "$cmd" | awk '{print $3}')
+            local node_op
+            node_op=$(echo "$cmd" | awk '{print $4}')
+            node_command "$chat_id" "$msg_id" "$node_op" "$node_type" "$node_vmid"
+            return
             ;;
     esac
+
+    # Single-argument / no-argument commands: look the handler up in the table.
+    local name
+    name=$(echo "$action" | cut -c2-)
+    local entry
+    entry=$(printf '%s\n' "$CMD_DISPATCH_TABLE" | grep "^${name}|" | head -n 1)
+
+    if [ -n "$entry" ]; then
+        local rest
+        rest="${entry#*|}"
+        local handler
+        handler="${rest%%|*}"
+        local pass_arg
+        pass_arg="${rest##*|}"
+        if [ "$pass_arg" = "1" ]; then
+            $handler "$chat_id" "$msg_id" "$arg1"
+        else
+            $handler "$chat_id" "$msg_id"
+        fi
+        return
+    fi
+
+    send_message "$chat_id" "$MSG_BOT_UNKNOWN_COMMAND"
 }
 
 # Action Processor for callback-based structured data (action:type:id:op)
@@ -186,4 +189,3 @@ process_action() {
             ;;
     esac
 }
-

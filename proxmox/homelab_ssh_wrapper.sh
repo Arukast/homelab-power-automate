@@ -82,7 +82,27 @@ case "$SSH_ORIGINAL_COMMAND" in
         ;;
 
     "cat > /etc/homelab_power.conf")
-        cat > /etc/homelab_power.conf
+        # Read the payload into a private temp file and validate every non-empty,
+        # non-comment line before installing it. A blanket `cat >` here would let
+        # anyone holding the router key plant arbitrary shell code that the root
+        # monitors then execute.
+        tmp=$(mktemp) || {
+            logger -t homelab-ssh-wrapper "Failed to buffer config payload into a temp file"
+            echo "Access Denied: could not buffer configuration payload." >&2
+            exit 1
+        }
+        cat > "$tmp"
+
+        # Reject if any non-empty, non-comment line fails strict validation.
+        if [ -n "$(grep -vE '^[[:space:]]*(#|$)' "$tmp" | grep -vE '^[A-Z_][A-Z0-9_]*="?[A-Za-z0-9 ,._/:+=-]*"?$')" ]; then
+            logger -t homelab-ssh-wrapper "REJECTED malformed configuration payload"
+            rm -f "$tmp"
+            echo "Access Denied: malformed configuration payload." >&2
+            exit 1
+        fi
+
+        install -m 600 -o root -g root "$tmp" /etc/homelab_power.conf
+        rm -f "$tmp"
         exit 0
         ;;
 

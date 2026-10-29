@@ -1,4 +1,8 @@
-#!/bin/bash
+#!/bin/sh
+# =============================================================================
+# /help Bot Command Handler
+# File: /usr/bin/telegram_components/commands/help_command.sh
+# =============================================================================
 
 help_command() {
     local chat_id="$1"

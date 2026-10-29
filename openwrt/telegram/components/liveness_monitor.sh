@@ -5,9 +5,17 @@
 # =============================================================================
 
 monitor_host_liveness() {
-    # Ensure only one instance of the monitor runs
-    local LIVENESS_PIDFILE="/var/run/telegram_liveness_monitor.pid"
-    init_daemon_pid "$LIVENESS_PIDFILE" "Host Liveness Monitor"
+    # Ensure only one instance of the monitor runs.
+    # This function is launched in the background (monitor_host_liveness &), so
+    # its body runs in a subshell where $$ is the PARENT daemon's PID — a pidfile
+    # written with $$ would never represent the monitor itself. An atomic
+    # mkdir-based lock is released automatically when the monitor exits.
+    local LIVENESS_LOCK="/var/run/telegram_liveness_monitor.lock"
+    if ! mkdir "$LIVENESS_LOCK" 2>/dev/null; then
+        echo "Host Liveness Monitor already running (lock: $LIVENESS_LOCK)." >&2
+        return 1
+    fi
+    trap 'rmdir "$LIVENESS_LOCK" 2>/dev/null' EXIT SIGTERM SIGINT
 
     echo "Starting Host Liveness Monitor..."
     

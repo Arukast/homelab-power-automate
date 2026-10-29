@@ -71,7 +71,12 @@ else
 fi
 
 # 3. Copy scripts
-echo -e "${GREEN}[3/5] Installing core monitoring & wrapper scripts...${NC}"
+echo -e "${GREEN}[3/5] Installing shared library & core monitoring/wrapper scripts...${NC}"
+mkdir -p /usr/local/lib/homelab
+cp lib.sh /usr/local/lib/homelab/lib.sh
+chmod 644 /usr/local/lib/homelab/lib.sh
+echo "Installed /usr/local/lib/homelab/lib.sh"
+
 cp proxmox_idle_monitor.sh /usr/local/bin/proxmox_idle_monitor.sh
 chmod 755 /usr/local/bin/proxmox_idle_monitor.sh
 echo "Installed /usr/local/bin/proxmox_idle_monitor.sh"

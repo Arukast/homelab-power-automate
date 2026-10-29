@@ -7,6 +7,9 @@
 CONF="/etc/homelab_power.conf"
 MSG_CONF="/etc/homelab_messages.conf"
 
+# Syslog tag for this monitor's log()/notify() calls (see lib.sh)
+LOG_TAG="proxmox-resource-monitor"
+
 # Defaults
 MONITOR_CPU_THRESHOLD_PCT=85
 MONITOR_RAM_THRESHOLD_PCT=90
@@ -20,11 +23,22 @@ STATE_FILE="/tmp/proxmox_resource_monitor_states"
 LOG_FILE="/var/log/proxmox_power.log"
 ENABLE_SYSLOG=1
 
-# Load configs
-[ -f "$CONF" ] && source "$CONF"
-[ -f "$MSG_CONF" ] && source "$MSG_CONF"
+# --- Shared library (hardened config loaders + helpers) ---
+# Installed to /usr/local/lib/homelab/lib.sh; fall back to the script's own
+# directory so it can also be exercised straight from the repository.
+LIB_FILE="/usr/local/lib/homelab/lib.sh"
+[ -f "$LIB_FILE" ] || LIB_FILE="$(dirname "$0")/lib.sh"
+# shellcheck source=lib.sh
+. "$LIB_FILE"
 
-# Default fallback alert/ok messages if homelab_messages.conf is missing
+# Load configs. load_conf()/load_msg_conf() only apply allowlisted/validated
+# "KEY=" assignments - they never `source` the files, because doing so as root
+# would let anyone holding the router SSH key run arbitrary code as root.
+load_conf "$CONF"
+load_msg_conf "$MSG_CONF"
+
+# Default fallback alert/ok messages (used when /etc/homelab_messages.conf is
+# absent, or when a template is rejected by the safe loader in lib.sh)
 MSG_MONITOR_CPU_ALERT=${MSG_MONITOR_CPU_ALERT:-'⚠️ *[Proxmox Warning]* CPU Load is high: *$VALUE%* (Threshold: $THRESHOLD%)'}
 MSG_MONITOR_CPU_OK=${MSG_MONITOR_CPU_OK:-'✅ *[Proxmox Recovery]* CPU Load returned to normal: *$VALUE%*'}
 MSG_MONITOR_RAM_ALERT=${MSG_MONITOR_RAM_ALERT:-'⚠️ *[Proxmox Warning]* RAM usage is high: *$VALUE%* (Threshold: $THRESHOLD%)'}
@@ -38,24 +52,8 @@ MSG_MONITOR_ZFS_OK=${MSG_MONITOR_ZFS_OK:-'✅ *[Proxmox Recovery]* ZFS pools are
 MSG_MONITOR_GUEST_ALERT=${MSG_MONITOR_GUEST_ALERT:-'⚠️ *[Proxmox Warning]* Critical guest *$GUEST_NAME* (VMID $VMID) is NOT running!'}
 MSG_MONITOR_GUEST_OK=${MSG_MONITOR_GUEST_OK:-'✅ *[Proxmox Recovery]* Critical guest *$GUEST_NAME* (VMID $VMID) is running again.'}
 
-log() {
-    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-    echo "$msg" >> "$LOG_FILE"
-    if [ "$ENABLE_SYSLOG" -eq 1 ]; then
-        logger -t "proxmox-resource-monitor" "$1"
-    fi
-    echo "$msg"
-}
-
-notify() {
-    local msg="$1"
-    log "NOTIFICATION: $msg"
-    if [ -n "$NOTIFICATION_URL" ]; then
-        curl -s --connect-timeout 2 --max-time 5 -X POST \
-            --data-urlencode "msg=$msg" \
-            "$NOTIFICATION_URL" >/dev/null &
-    fi
-}
+# --- Helper functions (log, notify, render_msg, load_conf, ...) live in
+# --- proxmox/lib.sh.
 
 touch "$STATE_FILE"
 touch "$LOG_FILE"
@@ -89,10 +87,13 @@ check_metric() {
     local guest_name_val="${10}"
     local pool_val="${11}"
 
-    # Setup variables for eval
+    # Expose the metric values for render_msg()'s $TOKEN substitution.
+    # NOTE: the disk path is exposed as HL_PATH, NOT PATH: assigning to a local
+    # named PATH shadows the real command lookup path for the whole function body,
+    # which silently broke date/grep/mv/curl inside log()/notify()/update_state().
     local VALUE="$current_val"
     local THRESHOLD="$threshold"
-    local PATH="$path_val"
+    local HL_PATH="$path_val"
     local SERVICE="$service_val"
     local VMID="$vmid_val"
     local GUEST_NAME="$guest_name_val"
@@ -107,7 +108,7 @@ check_metric() {
     local now=$(date +%s)
 
     if [ "$is_critical" -eq 1 ]; then
-        local alert_msg=$(eval echo "\"$alert_tmpl\"")
+        local alert_msg=$(render_msg "$alert_tmpl")
         if [ "$prev_status" = "OK" ]; then
             log "Metric $key entered CRITICAL: $current_val"
             notify "$alert_msg"
@@ -122,7 +123,7 @@ check_metric() {
         fi
     else
         if [ "$prev_status" = "CRITICAL" ]; then
-            local recovery_msg=$(eval echo "\"$recovery_tmpl\"")
+            local recovery_msg=$(render_msg "$recovery_tmpl")
             log "Metric $key recovered to OK: $current_val"
             notify "$recovery_msg"
             update_state "$key" "OK" "$now"
@@ -131,12 +132,15 @@ check_metric() {
 }
 
 # --- 1. Check CPU Utilization ---
+# /proc/stat fields: user nice system idle iowait irq softirq steal guest guest_nice
+# ("guest" and "guest_nice" are already folded into user/nice by the kernel, so
+# summing them would double-count and under-report CPU usage. Only a..h count.)
 read -r cpu a b c d e f g h i j < /proc/stat
-prev_total=$((a+b+c+d+e+f+g+h+i+j))
+prev_total=$((a+b+c+d+e+f+g+h))
 prev_idle=$((d+e))
 sleep 1
 read -r cpu a b c d e f g h i j < /proc/stat
-total=$((a+b+c+d+e+f+g+h+i+j))
+total=$((a+b+c+d+e+f+g+h))
 idle=$((d+e))
 diff_total=$((total - prev_total))
 diff_idle=$((idle - prev_idle))
@@ -163,7 +167,7 @@ check_metric "ram" "$RAM_PCT" "$MONITOR_RAM_THRESHOLD_PCT" "$RAM_CRITICAL" "$MSG
 # --- 3. Check Disk Utilization ---
 for path in $MONITOR_DISK_PATHS; do
     if [ -d "$path" ] || [ -f "$path" ]; then
-        DISK_PCT=$(df -h "$path" 2>/dev/null | awk 'NR==2 {print $5}' | tr -d '%')
+        DISK_PCT=$(df -P "$path" 2>/dev/null | awk 'NR==2 {print $5}' | tr -d '%')
         if [ -n "$DISK_PCT" ]; then
             DISK_CRITICAL=0
             [ "$DISK_PCT" -gt "$MONITOR_DISK_THRESHOLD_PCT" ] && DISK_CRITICAL=1

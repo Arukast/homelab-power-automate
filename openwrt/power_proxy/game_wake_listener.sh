@@ -9,9 +9,9 @@
 . /usr/bin/components/common_init.sh
 
 # Load power_proxy-specific components
-. "$PP_COMP"/cleanup_helper.sh
-. "$PP_COMP"/network_helper.sh
-. "$PP_COMP"/listener_helper.sh
+source_required "$PP_COMP/cleanup_helper.sh"
+source_required "$PP_COMP/network_helper.sh"
+source_required "$PP_COMP/listener_helper.sh"
 
 # Read Config
 init_common_config
@@ -37,29 +37,21 @@ wait "$NC_PID"
 # Player connection detected!
 echo "Player connection detected on port $PORT_RAW. Initiating host wake sequence..."
 
-# 1. Dispatch Wake-on-LAN
-etherwake -i "${LAN_INTERFACE:-br-lan}" "$HOST_MAC"
+# 1. Dispatch Wake-on-LAN (cooldown-guarded so a spurious/duplicate hit on the
+#    port cannot flood the sleeping host with magic packets)
+send_wol "${LAN_INTERFACE:-br-lan}" "$HOST_MAC"
 
 # 2. Dispatch notifications
-MSG=$(eval echo "\"$MSG_WAKE_GAME_PLAYER\"")
+MSG=$(render_msg "$MSG_WAKE_GAME_PLAYER")
 /usr/bin/homelab_notify.sh "$MSG" &
 
-# 3. Wait for the real host service to boot up
-# We check if the host is pingable, and if it's TCP, we also verify if the specific port responds.
-while true; do
-    if ping -c 1 -W 1 "$HOST_IP" >/dev/null 2>&1; then
-        if [ "$PROTO" = "tcp" ]; then
-            if nc -w 1 -z "$HOST_IP" "$PORT_NUM" >/dev/null 2>&1; then
-                echo "Real game server on $HOST_IP:$PORT_NUM (TCP) is now ONLINE."
-                break
-            fi
-        else
-            echo "Real host $HOST_IP is now awake and pingable. UDP service on port $PORT_NUM is active."
-            break
-        fi
-    fi
-    sleep 2
-done
+# 3. Wait for the real host service to boot up (bounded to ~3 minutes, with the
+#    magic packet re-issued every ~30s). The listener exits non-zero if the
+#    service never answers, so the parent daemon can retry it later.
+if ! wait_for_game_boot "${LAN_INTERFACE:-br-lan}" "$HOST_MAC"; then
+    log_router "Aborting game wake listener for port $PORT_RAW: host/service never came online."
+    exit 1
+fi
 
 # The real server is now online! We exit.
 # The parent power_proxy_daemon will remove NAT rules and clean up this listener process.

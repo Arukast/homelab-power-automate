@@ -7,13 +7,15 @@
 # Load common initialization (paths, config, SSH vars)
 . /usr/bin/components/common_init.sh
 
-# Load power_proxy-specific components
-. "$PP_COMP"/notify_helper.sh
-. "$PP_COMP"/redirects_helper.sh
-. "$PP_COMP"/network_helper.sh
-. "$PP_COMP"/listener_helper.sh
-. "$PP_COMP"/cleanup_helper.sh
-. "$PP_COMP"/main.sh
+# Load power_proxy-specific components.
+# source_required (components/lib.sh) aborts loudly on a missing/renamed
+# component instead of leaving the daemon running half-initialized.
+source_required "$PP_COMP/notify_helper.sh"
+source_required "$PP_COMP/redirect_helper.sh"
+source_required "$PP_COMP/network_helper.sh"
+source_required "$PP_COMP/listener_helper.sh"
+source_required "$PP_COMP/cleanup_helper.sh"
+source_required "$PP_COMP/main.sh"
 
 # Read Config
 init_common_config

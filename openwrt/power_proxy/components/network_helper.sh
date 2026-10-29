@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 bind_ip() {
     echo "Binding IP alias $GUEST_IP/32 to $IFACE..."

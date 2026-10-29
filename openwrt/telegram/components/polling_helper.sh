@@ -1,8 +1,26 @@
 #!/bin/sh
+# =============================================================================
+# OpenWrt Telegram Bot Long-Polling Loop
+# File: /usr/bin/telegram_components/polling_helper.sh
+# =============================================================================
+
+# Persisted long-poll offset. Persisting it means that if the daemon crashes
+# mid-command, the already-processed update is not replayed on the next boot
+# (which could otherwise re-run a destructive command such as /hostshutdown).
+OFFSET_FILE="/var/run/telegram_offset"
 
 # Main polling loop
 poll_updates() {
+    # Resume from the last acknowledged update, defaulting to 0 on a cold boot.
     OFFSET=0
+    if [ -f "$OFFSET_FILE" ]; then
+        local saved_offset
+        saved_offset=$(cat "$OFFSET_FILE" 2>/dev/null)
+        if echo "$saved_offset" | grep -qE "^[0-9]+$"; then
+            OFFSET="$saved_offset"
+        fi
+    fi
+
     echo "Starting Homelab Telegram Bot Daemon..."
 
     # Clear any active webhook so long polling functions reliably
@@ -38,6 +56,10 @@ poll_updates() {
         i=0
         while [ $i -lt $COUNT ]; do
             UPDATE_ID=$(echo "$UPDATES" | jsonfilter -e "@.result[$i].update_id")
+
+            # A callback's source message id must never leak into the next
+            # (possibly plain-message) update.
+            CALLBACK_MSG_ID=""
 
             # Try to parse normal message
             USER_ID=$(echo "$UPDATES" | jsonfilter -e "@.result[$i].message.from.id")
@@ -84,7 +106,7 @@ poll_updates() {
                         fi
                     else
                         # Execute interactive callback actions or slash commands
-                        if echo "$CMD_TEXT" | grep -qE "^action:"; then
+                        if echo "$CMD_TEXT" | grep -qE "^cmd:|^maint:|^action:"; then
                             echo "Running action: $CMD_TEXT from authorized User ID: $USER_ID"
                             process_action "$CMD_TEXT" "$CHAT_ID" "${CALLBACK_MSG_ID:-}"
                         elif echo "$CMD_TEXT" | grep -qE "^/"; then
@@ -107,11 +129,15 @@ poll_updates() {
 
             # Acknowledge callback query if it was one
             if [ -n "$CALLBACK_ID" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery" \
+                curl -s --max-time 5 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery" \
                     --data-urlencode "callback_query_id=${CALLBACK_ID}" >/dev/null &
             fi
 
             i=$((i + 1))
         done
+
+        # Persist the offset only after the whole batch has been handled so that
+        # a crash mid-batch replays at most the unacknowledged updates.
+        echo "$OFFSET" > "$OFFSET_FILE"
     done
 }
