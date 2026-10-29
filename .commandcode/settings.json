@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Shell(echo \"GNU cut:\"; printf '/maintenance\\n' | cut -d' ' -f2- | od -c | head -2 echo \"GNU cut (with args):\"; printf '/maintenance system on x\\n' | cut -d' ' -f2- if command -v busybox >/dev/null 2>&1; then echo \"busybox cut:\"; printf '/maintenance\\n' | busybox cut -d' ' -f2- | od -c | head -2; else echo \"no busybox here\"; fi echo \"sed fix:\"; printf '/maintenance\\n' | sed 's/^[^[:space:]]*[[:space:]]*//' | od -c | head -2)"
-    ],
-    "deny": [],
-    "defaultMode": "default"
-  }
-}
