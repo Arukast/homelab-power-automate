@@ -537,6 +537,12 @@ check_ok "bot names a stale wrapper (Access Denied)" \
 check_ok "bot names a stale monitor (HOMELAB_CHECK:UNSUPPORTED)" \
     grep -q 'MSG_BOT_PRECHECK_UNSUPPORTED' openwrt/telegram/components/command_helper.sh
 
+# 7.28 Liveness monitor: single instance + duplicate-notification dedupe
+check_ok "daemon starts at most one liveness monitor and reaps it on exit" \
+    bash -c 'grep -q "LIVENESS_PIDFILE" openwrt/telegram/telegram_bot_daemon.sh && grep -q "kill \"\$LIVENESS_PID\"" openwrt/telegram/telegram_bot_daemon.sh'
+check_ok "liveness transitions are deduplicated across instances" \
+    bash -c 'grep -q "NOTIFY_LOCK" openwrt/telegram/components/liveness_monitor.sh && grep -q "STATE_FILE" openwrt/telegram/components/liveness_monitor.sh'
+
 # 7.24 Discord webhook: deprecated host normalised, failures logged
 check_ok "Discord webhook URL is normalised off the deprecated discordapp.com" \
     grep -q 'discordapp\\.com#discord.com' openwrt/telegram/notify_homelab.sh

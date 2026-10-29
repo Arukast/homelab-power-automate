@@ -27,6 +27,12 @@ monitor_host_liveness() {
         current_state="offline"
     fi
     
+    # Persistent state + an atomic mutex, so that even if more than one monitor
+    # instance is running only ONE of them emits a given transition.
+    local STATE_FILE="/var/run/telegram_liveness_state"
+    local NOTIFY_LOCK="/var/run/telegram_liveness_notify.lock"
+    [ -f "$STATE_FILE" ] || echo "$current_state" > "$STATE_FILE" 2>/dev/null
+
     # Use the first authorized user as default notification target
     local notify_chat_id="${NOTIFY_CHAT_ID:-$(echo "$ALLOWED_USER_IDS" | cut -d',' -f1)}"
     
@@ -53,7 +59,19 @@ monitor_host_liveness() {
                 # Second consecutive check confirms the transition — notify now
                 echo "Liveness Monitor: State transition confirmed: $current_state -> $next_state"
                 
-                if [ -n "$notify_chat_id" ]; then
+                # Claim the transition atomically: the persisted state is the
+                # source of truth, so a second monitor instance sees it already
+                # applied and stays quiet.
+                local _claimed=0 _last=""
+                if mkdir "$NOTIFY_LOCK" 2>/dev/null; then
+                    _last=$(cat "$STATE_FILE" 2>/dev/null)
+                    if [ "$_last" != "$next_state" ]; then
+                        echo "$next_state" > "$STATE_FILE" 2>/dev/null
+                        _claimed=1
+                    fi
+                    rmdir "$NOTIFY_LOCK" 2>/dev/null
+                fi
+                if [ "$_claimed" -eq 1 ] && [ -n "$notify_chat_id" ]; then
                     if [ "$next_state" = "online" ]; then
                         send_message "$notify_chat_id" "$(expand_msg "${MSG_BOT_HOST_ONLINE:-Host is now ONLINE and reachable.}")" ""
                     else

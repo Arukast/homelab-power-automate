@@ -32,9 +32,25 @@ init_daemon_pid "$PIDFILE" "telegram_bot_daemon.sh"
 # Check token
 is_telegram_bot_token
 
-# Start Liveness Monitor in background
-monitor_host_liveness &
+# Start the Host Liveness Monitor: at most one instance, and tied to this
+# daemon's lifetime. Without the pid guard, a procd restart left the old monitor
+# orphaned while a new one started, producing duplicate ONLINE/OFFLINE messages.
+LIVENESS_PIDFILE="/var/run/telegram_liveness_monitor.pid"
+LIVENESS_PID=""
+if [ -f "$LIVENESS_PIDFILE" ] && kill -0 "$(cat "$LIVENESS_PIDFILE" 2>/dev/null)" 2>/dev/null; then
+    echo "Host Liveness Monitor already running; not starting another." >&2
+else
+    monitor_host_liveness &
+    LIVENESS_PID=$!
+    echo "$LIVENESS_PID" > "$LIVENESS_PIDFILE"
+fi
 
+cleanup_all() {
+    [ -n "$LIVENESS_PID" ] && kill "$LIVENESS_PID" 2>/dev/null
+    rm -f "$LIVENESS_PIDFILE" "$PIDFILE"
+    exit 0
+}
+trap cleanup_all SIGTERM SIGINT EXIT
 
 # Check host alliveness
 is_host_alive
