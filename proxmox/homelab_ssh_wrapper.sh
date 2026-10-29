@@ -8,6 +8,22 @@
 # Log attempts to syslog if enabled
 logger -t homelab-ssh-wrapper "Received command execution request: $SSH_ORIGINAL_COMMAND"
 
+# Launch the idle monitor fully detached from this SSH session.
+#
+# A plain `nohup ... &` can be killed when sshd/sudo tear the session down
+# (logind KillUserProcesses, SIGHUP), which made a manual /sleep /hostshutdown
+# /hostreboot silently do nothing even though the systemd-timer path worked.
+# systemd-run puts it in a transient *system* unit, so it is not part of the
+# login session and survives; setsid + a detached stdin is the fallback.
+run_idle_monitor() {
+    if command -v systemd-run >/dev/null 2>&1; then
+        systemd-run --unit="homelab-idle-$(date +%s)-$$" --collect --quiet \
+            /usr/local/bin/proxmox_idle_monitor.sh "$@"
+    else
+        setsid /usr/local/bin/proxmox_idle_monitor.sh "$@" >/dev/null 2>&1 < /dev/null &
+    fi
+}
+
 # --- 1. Match Exact Static Commands ---
 case "$SSH_ORIGINAL_COMMAND" in
     "echo OK")
@@ -52,32 +68,32 @@ case "$SSH_ORIGINAL_COMMAND" in
         ;;
         
     "nohup /usr/local/bin/proxmox_idle_monitor.sh >/dev/null 2>&1 &")
-        nohup /usr/local/bin/proxmox_idle_monitor.sh >/dev/null 2>&1 &
+        run_idle_monitor
         exit 0
         ;;
         
     "nohup /usr/local/bin/proxmox_idle_monitor.sh --force >/dev/null 2>&1 &")
-        nohup /usr/local/bin/proxmox_idle_monitor.sh --force >/dev/null 2>&1 &
+        run_idle_monitor --force
         exit 0
         ;;
         
     "nohup /usr/local/bin/proxmox_idle_monitor.sh --shutdown >/dev/null 2>&1 &")
-        nohup /usr/local/bin/proxmox_idle_monitor.sh --shutdown >/dev/null 2>&1 &
+        run_idle_monitor --shutdown
         exit 0
         ;;
         
     "nohup /usr/local/bin/proxmox_idle_monitor.sh --shutdown --force >/dev/null 2>&1 &")
-        nohup /usr/local/bin/proxmox_idle_monitor.sh --shutdown --force >/dev/null 2>&1 &
+        run_idle_monitor --shutdown --force
         exit 0
         ;;
         
     "nohup /usr/local/bin/proxmox_idle_monitor.sh --reboot >/dev/null 2>&1 &")
-        nohup /usr/local/bin/proxmox_idle_monitor.sh --reboot >/dev/null 2>&1 &
+        run_idle_monitor --reboot
         exit 0
         ;;
         
     "nohup /usr/local/bin/proxmox_idle_monitor.sh --reboot --force >/dev/null 2>&1 &")
-        nohup /usr/local/bin/proxmox_idle_monitor.sh --reboot --force >/dev/null 2>&1 &
+        run_idle_monitor --reboot --force
         exit 0
         ;;
 

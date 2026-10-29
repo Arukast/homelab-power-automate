@@ -535,6 +535,14 @@ check_ok "Discord webhook URL is normalised off the deprecated discordapp.com" \
     grep -q 'discordapp\\.com#discord.com' openwrt/telegram/notify_homelab.sh
 check_ok "Discord delivery failures are logged (not silent)" \
     grep -q 'Discord webhook delivery failed' openwrt/telegram/notify_homelab.sh
+
+# 7.25 Manual power actions must survive the SSH session; VM shutdown must be bounded
+check_ok "manual actions are detached via systemd-run" \
+    grep -q 'systemd-run --unit="homelab-idle-' proxmox/homelab_ssh_wrapper.sh
+check_ok "wrapper still matches the router's reboot-force command exactly" \
+    grep -q '"nohup /usr/local/bin/proxmox_idle_monitor.sh --reboot --force >/dev/null 2>&1 &")' proxmox/homelab_ssh_wrapper.sh
+check_ok "guest VM shutdown is bounded (--timeout) rather than 180s/VM" \
+    grep -q 'qm shutdown "\$vmid" --timeout 90' proxmox/proxmox_idle_monitor.sh
 check_ok "host_power_action consumes the --check verdict" \
     grep -q 'HOMELAB_CHECK:BLOCKED:\*' openwrt/telegram/components/command_helper.sh
 check_ok "a blocked safe action sends MSG_BOT_ACTION_BLOCKED" \

@@ -473,12 +473,15 @@ for vmid in $RUNNING_VMS; do
             SUSPENDED_VMS="$SUSPENDED_VMS $vmid"
         else
             log "WARNING: Failed to suspend VM $vmid. Falling back to shutdown..."
-            qm shutdown "$vmid"
+            qm shutdown "$vmid" --timeout 90 >/dev/null 2>&1 &
             SHUTDOWN_VMS="$SHUTDOWN_VMS $vmid"
         fi
     elif [ "$VM_SUSPEND_METHOD" = "shutdown" ]; then
         log "VM [$vmid]: Sending ACPI shutdown signal..."
-        qm shutdown "$vmid"
+        # --timeout bounds the otherwise 180s-per-VM default, and '&' shuts the
+        # VMs down in parallel: sequentially this could stall a reboot for
+        # ~3 minutes per stubborn VM, which looked like "the host never reboots".
+        qm shutdown "$vmid" --timeout 90 >/dev/null 2>&1 &
         SHUTDOWN_VMS="$SHUTDOWN_VMS $vmid"
     else
         log "VM [$vmid]: Leaving running (No action)."
@@ -488,7 +491,7 @@ done
 # Wait for stopped/shutdown nodes to fully power down with timeout
 if [ -n "$STOPPED_LXCS" ] || [ -n "$SHUTDOWN_VMS" ]; then
     log "Waiting for guest nodes to power off completely..."
-    for i in $(seq 1 12); do
+    for i in $(seq 1 20); do
         ACTIVE_COUNT=0
         for vmid in $STOPPED_LXCS $SHUTDOWN_VMS; do
             if qm status "$vmid" >/dev/null 2>&1 && [ "$(qm status "$vmid" | awk '{print $2}')" = "running" ]; then
