@@ -529,6 +529,12 @@ check_ok "bot names a stale wrapper (Access Denied)" \
     grep -q 'MSG_BOT_PRECHECK_DENIED' openwrt/telegram/components/command_helper.sh
 check_ok "bot names a stale monitor (HOMELAB_CHECK:UNSUPPORTED)" \
     grep -q 'MSG_BOT_PRECHECK_UNSUPPORTED' openwrt/telegram/components/command_helper.sh
+
+# 7.24 Discord webhook: deprecated host normalised, failures logged
+check_ok "Discord webhook URL is normalised off the deprecated discordapp.com" \
+    grep -q 'discordapp\\.com#discord.com' openwrt/telegram/notify_homelab.sh
+check_ok "Discord delivery failures are logged (not silent)" \
+    grep -q 'Discord webhook delivery failed' openwrt/telegram/notify_homelab.sh
 check_ok "host_power_action consumes the --check verdict" \
     grep -q 'HOMELAB_CHECK:BLOCKED:\*' openwrt/telegram/components/command_helper.sh
 check_ok "a blocked safe action sends MSG_BOT_ACTION_BLOCKED" \

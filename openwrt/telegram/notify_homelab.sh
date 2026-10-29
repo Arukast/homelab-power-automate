@@ -79,9 +79,23 @@ if [ "$DISABLE_NOTIFICATIONS" != "1" ] && [ -n "$DISCORD_WEBHOOK_URL" ]; then
     payload="{\"embeds\":[{\"title\":\"Power Monitor Notification\",\"description\":\"${clean_msg}\",\"color\":${color},\"footer\":{\"text\":\"Arukast Homelab Portal\"}}]}"
     
     for url in $(echo "$DISCORD_WEBHOOK_URL" | tr ',' ' '); do
-        if [ -n "$url" ]; then
-            curl -s --connect-timeout 3 --max-time 10 -H "Content-Type: application/json" -X POST -d "$payload" "$url" >/dev/null &
-        fi
+        [ -n "$url" ] || continue
+        # Discord's legacy host discordapp.com is deprecated: POSTs to it come
+        # back as HTTP 429 ("You are being rate limited") instead of reaching the
+        # webhook, so notifications vanish silently. Normalise to discord.com.
+        url=$(printf '%s' "$url" | sed 's#discordapp\.com#discord.com#g')
+        (
+            # Discord answers a delivered webhook with 204 No Content. Anything
+            # else (429/404/000) is logged so a broken webhook is visible in
+            # `logread` instead of failing without a trace.
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+                --connect-timeout 3 --max-time 10 \
+                -H "Content-Type: application/json" -X POST -d "$payload" "$url" 2>/dev/null)
+            case "$code" in
+                200|204) ;;
+                *) logger -t homelab-notify "Discord webhook delivery failed: HTTP ${code:-000}" ;;
+            esac
+        ) &
     done
 fi
 
