@@ -16,39 +16,6 @@ cmd_check_host_alive() {
     return 0
 }
 
-# Common: check for blocking guests (VMs/containers) during shutdown/reboot
-# Sets blocking_guests variable if guests found; returns 1 if blocking, 0 otherwise
-cmd_blocking_guests_check() {
-    local chat_id="$1"
-    local message_id="$2"
-    local running_guests="$($SSH_CMD "pct list | awk 'NR>1 && \$2==\"running\" {print \$1}'; qm list | awk 'NR>1 && \$3==\"running\" {print \$1}'" 2>/dev/null)"
-    local blocking_guests=""
-
-    if [ -n "$running_guests" ]; then
-        for vmid in $running_guests; do
-            local is_exempt=0
-            for exempt in $(echo "$EXEMPT_SHUTDOWN_GUESTS" | tr ',' ' '); do
-                if [ "$vmid" = "$exempt" ]; then
-                    is_exempt=1
-                    break
-                fi
-            done
-            if [ "$is_exempt" -eq 0 ]; then
-                blocking_guests="$blocking_guests $vmid"
-            fi
-        done
-    fi
-
-    if [ -n "$blocking_guests" ]; then
-        local clean_blocking=$(echo "$blocking_guests" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-        send_message "$chat_id" "*Shutdown Blocked:* Core power actions are blocked because active non-exempt guest(s) are running: *${clean_blocking}*.
-
-Please stop them first, or use \`/hostshutdownforce\`." "" "$message_id"
-        return 1
-    fi
-    return 0
-}
-
 # Check if system or specific service is under maintenance
 cmd_check_maintenance_active() {
     local chat_id="$1"
@@ -79,22 +46,6 @@ Command \`$cmd_str\` is prohibited." "" "$message_id"
     return 0
 }
 
-# Ensure system is UNDER maintenance before allowing an action
-cmd_require_maintenance() {
-    local chat_id="$1"
-    local message_id="$2"
-    local cmd_str="$3"
-
-    if [ ! -f "/etc/homelab_maintenance/system" ]; then
-        send_message "$chat_id" "⚠️ *Action Blocked:* The host is currently in its *Active Window*.
-Core power actions are prohibited to prevent accidental downtime.
-
-Please enable maintenance mode first, or use the \`force\` version of this command (e.g., \`$cmd_str'force\`)." "" "$message_id"
-        return 1
-    fi
-    return 0
-}
-
 validate_numeric_arg() {
     local chat_id="$1"
     local val="$2"
@@ -108,15 +59,82 @@ validate_numeric_arg() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# _guest_probe <pct|qm|auto> <vmid>
+# Echoes "<tool> <state>" for the guest (e.g. "qm running"), or nothing if the
+# guest does not exist for the requested tool. With "auto" the type is derived
+# from the VMID (Proxmox VMIDs are unique across VMs and containers).
+# ---------------------------------------------------------------------------
+_guest_probe() {
+    local tool="$1"
+    local vmid="$2"
+    local out="" t=""
+
+    if [ "$tool" = "pct" ] || [ "$tool" = "qm" ]; then
+        out=$($SSH_CMD "$tool status $vmid" 2>/dev/null)
+        [ -n "$out" ] && t="$tool"
+    else
+        out=$($SSH_CMD "pct status $vmid" 2>/dev/null)
+        if [ -n "$out" ]; then
+            t="pct"
+        else
+            out=$($SSH_CMD "qm status $vmid" 2>/dev/null)
+            [ -n "$out" ] && t="qm"
+        fi
+    fi
+
+    [ -z "$t" ] && return 1
+    printf '%s %s\n' "$t" "$(printf '%s\n' "$out" | awk '{print $2}')"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _guest_require <chat_id> <message_id> <vmid> <pct|qm|auto> <not_found_msg>
+# Echoes "<tool> <state>" when the guest exists. Otherwise it sends the
+# appropriate reply (a type-mismatch hint when the VMID exists as the *other*
+# type, else <not_found_msg>) and returns 1.
+# ---------------------------------------------------------------------------
+_guest_require() {
+    local chat_id="$1"
+    local message_id="$2"
+    local vmid="$3"
+    local tool="$4"
+    local not_found_msg="$5"
+
+    local probe
+    probe=$(_guest_probe "$tool" "$vmid")
+
+    if [ -z "$probe" ]; then
+        if [ "$tool" = "pct" ] || [ "$tool" = "qm" ]; then
+            local other requested actual
+            if [ "$tool" = "qm" ]; then
+                other="pct"; requested="VM"; actual="CT"
+            else
+                other="qm"; requested="CT"; actual="VM"
+            fi
+            if [ -n "$(_guest_probe "$other" "$vmid")" ]; then
+                export arg1="$vmid"; export arg2="$actual"; export arg3="$requested"
+                send_message "$chat_id" "$(render_msg "$MSG_BOT_GUEST_WRONG_TYPE")" "" "$message_id"
+                return 1
+            fi
+        fi
+        send_message "$chat_id" "$not_found_msg" "" "$message_id"
+        return 1
+    fi
+
+    printf '%s\n' "$probe"
+    return 0
+}
+
 # =============================================================================
 # Unified Guest Lifecycle Action
-#   guest_action <chat_id> <message_id> <vmid> <pct|qm> <start|stop|reboot>
+#   guest_action <chat_id> <message_id> <vmid> <pct|qm|auto> <start|stop|reboot>
 #
-# Collapses the six guest-lifecycle commands (/ctstart /ctstop /ctrestart
-# /vmstart /vmstop /vmrestart) into a single implementation.
-#   pct → LXC container, qm → QEMU virtual machine
-# The command-specific message keys and the maintenance/usage guards are
-# selected from <tool>:<op> so each command keeps its original wording.
+# The single implementation behind /start /stop /restart and /node.
+#   auto → resolve the guest type from the VMID. Proxmox VMIDs are unique across
+#          QEMU VMs and LXC containers, so the type is always derivable.
+#   pct  → force an LXC container (used by /node ct ...)
+#   qm   → force a QEMU VM       (used by /node vm ...)
 # =============================================================================
 guest_action() {
     local chat_id="$1"
@@ -125,55 +143,32 @@ guest_action() {
     local tool="$4"
     local op="$5"
 
-    local usage msg_progress msg_not_found msg_success msg_failed command_str
-    case "${tool}:${op}" in
-        pct:start)
-            usage="$MSG_BOT_CT_START_USAGE"
-            msg_progress="$MSG_BOT_CT_START_STARTING"
-            msg_not_found="$MSG_BOT_CT_START_NOT_FOUND"
-            msg_success="$MSG_BOT_CT_START_SUCCESS"
-            msg_failed="$MSG_BOT_CT_START_FAILED"
-            command_str="/ctstart $vmid"
+    local usage msg_progress msg_not_found msg_success msg_failed msg_already_running command_str
+    case "$op" in
+        start)
+            usage="$MSG_BOT_GUEST_START_USAGE"
+            msg_progress="$MSG_BOT_GUEST_STARTING"
+            msg_not_found="$MSG_BOT_GUEST_NOT_FOUND"
+            msg_success="$MSG_BOT_GUEST_START_SUCCESS"
+            msg_failed="$MSG_BOT_GUEST_START_FAILED"
+            msg_already_running="$MSG_BOT_GUEST_ALREADY_RUNNING"
+            command_str="/start $vmid"
             ;;
-        pct:stop)
-            usage="$MSG_BOT_CT_STOP_USAGE"
-            msg_progress="$MSG_BOT_CT_STOP_STOPPING"
-            msg_not_found="$MSG_BOT_CT_STOP_NOT_FOUND"
-            msg_success="$MSG_BOT_CT_STOP_SUCCESS"
-            msg_failed="$MSG_BOT_CT_STOP_FAILED"
-            command_str="/ctstop $vmid"
+        stop)
+            usage="$MSG_BOT_GUEST_STOP_USAGE"
+            msg_progress="$MSG_BOT_GUEST_STOPPING"
+            msg_not_found="$MSG_BOT_GUEST_NOT_FOUND"
+            msg_success="$MSG_BOT_GUEST_STOP_SUCCESS"
+            msg_failed="$MSG_BOT_GUEST_STOP_FAILED"
+            command_str="/stop $vmid"
             ;;
-        pct:reboot)
-            usage="$MSG_BOT_CT_RESTART_USAGE"
-            msg_progress="$MSG_BOT_CT_RESTART_RESTARTING"
-            msg_not_found="$MSG_BOT_CT_RESTART_NOT_FOUND"
-            msg_success="$MSG_BOT_CT_RESTART_SUCCESS"
-            msg_failed="$MSG_BOT_CT_RESTART_FAILED"
-            command_str="/ctrestart $vmid"
-            ;;
-        qm:start)
-            usage="$MSG_BOT_VM_START_USAGE"
-            msg_progress="$MSG_BOT_VM_START_SENDING"
-            msg_not_found="$MSG_BOT_VM_START_NOT_FOUND"
-            msg_success="$MSG_BOT_VM_START_SUCCESS"
-            msg_failed="$MSG_BOT_VM_START_FAILED"
-            command_str="/vmstart $vmid"
-            ;;
-        qm:stop)
-            usage="$MSG_BOT_VM_STOP_USAGE"
-            msg_progress="$MSG_BOT_VM_STOP_SENDING"
-            msg_not_found="$MSG_BOT_VM_STOP_NOT_FOUND"
-            msg_success="$MSG_BOT_VM_STOP_SUCCESS"
-            msg_failed="$MSG_BOT_VM_STOP_FAILED"
-            command_str="/vmstop $vmid"
-            ;;
-        qm:reboot)
-            usage="$MSG_BOT_VM_RESTART_USAGE"
-            msg_progress="$MSG_BOT_VM_RESTART_SENDING"
-            msg_not_found="$MSG_BOT_VM_RESTART_NOT_FOUND"
-            msg_success="$MSG_BOT_VM_RESTART_SUCCESS"
-            msg_failed="$MSG_BOT_VM_RESTART_FAILED"
-            command_str="/vmrestart $vmid"
+        reboot)
+            usage="$MSG_BOT_GUEST_RESTART_USAGE"
+            msg_progress="$MSG_BOT_GUEST_RESTARTING"
+            msg_not_found="$MSG_BOT_GUEST_NOT_FOUND"
+            msg_success="$MSG_BOT_GUEST_RESTART_SUCCESS"
+            msg_failed="$MSG_BOT_GUEST_RESTART_FAILED"
+            command_str="/restart $vmid"
             ;;
         *)
             return
@@ -192,52 +187,51 @@ guest_action() {
     export arg1="$vmid"
 
     if [ "$op" = "start" ]; then
-        # QEMU start announces in the foreground immediately; the LXC start path
-        # runs entirely in the worker (it may have to wake the host first), so
-        # its "starting" notice is emitted from inside the worker.
-        if [ "$tool" = "qm" ]; then
-            send_message "$chat_id" "$msg_progress" "" "$message_id"
-        fi
-
+        # Runs in a worker: it may have to wake the host before it can even
+        # discover the guest type. The "starting" notice is emitted only once we
+        # know the guest exists and is not already running.
         (
             # Re-establish scope for the subshell
             chat_id="$chat_id"
             message_id="$message_id"
 
-            if [ "$tool" = "pct" ]; then
-                if ! is_host_alive; then
-                    send_message "$chat_id" "$MSG_BOT_CT_START_HOST_WAKING" "" "$message_id"
-                    etherwake -i "${LAN_INTERFACE:-br-lan}" "$HOST_MAC"
+            # Wake the host if needed.
+            if ! is_host_alive; then
+                send_message "$chat_id" "$MSG_BOT_GUEST_HOST_WAKING" "" "$message_id"
+                etherwake -i "${LAN_INTERFACE:-br-lan}" "$HOST_MAC"
+                send_message "$chat_id" "$MSG_BOT_GUEST_WAITING" "" "$message_id"
 
-                    send_message "$chat_id" "$MSG_BOT_CT_START_WAITING" "" "$message_id"
-
-                    local success=0
-                    local attempt=1
-                    while [ $attempt -le 25 ]; do
-                        if is_host_alive; then
-                            if $SSH_CMD "echo OK" >/dev/null 2>&1; then
-                                success=1
-                                break
-                            fi
-                        fi
-                        sleep 3
-                        attempt=$((attempt + 1))
-                    done
-
-                    if [ $success -eq 0 ]; then
-                        send_message "$chat_id" "$MSG_BOT_CT_START_TIMEOUT" "" "$message_id"
-                        return
+                local success=0
+                local attempt=1
+                while [ $attempt -le 25 ]; do
+                    if is_host_alive && $SSH_CMD "echo OK" >/dev/null 2>&1; then
+                        success=1
+                        break
                     fi
+                    sleep 3
+                    attempt=$((attempt + 1))
+                done
 
-                    send_message "$chat_id" "$MSG_BOT_CT_START_HOST_ONLINE" "" "$message_id"
+                if [ $success -eq 0 ]; then
+                    send_message "$chat_id" "$MSG_BOT_GUEST_TIMEOUT" "" "$message_id"
+                    return
                 fi
-                send_message "$chat_id" "$msg_progress" "" "$message_id"
+
+                send_message "$chat_id" "$MSG_BOT_GUEST_HOST_ONLINE" "" "$message_id"
             fi
 
-            if ! $SSH_CMD "$tool status $vmid" >/dev/null 2>&1; then
-                send_message "$chat_id" "$msg_not_found" "" "$message_id"
+            # Resolve the guest type + state (or report not-found / wrong type).
+            local probe
+            probe=$(_guest_require "$chat_id" "$message_id" "$vmid" "$tool" "$msg_not_found") || return
+            tool="${probe%% *}"
+
+            # Already running? Report it instead of issuing a start.
+            if [ "${probe##* }" = "running" ]; then
+                send_message "$chat_id" "$msg_already_running" "" "$message_id"
                 return
             fi
+
+            send_message "$chat_id" "$msg_progress" "" "$message_id"
 
             local start_out
             start_out=$($SSH_CMD "$tool start $vmid" 2>&1)
@@ -254,30 +248,23 @@ guest_action() {
                 if [ -z "$display_out" ]; then
                     display_out="Started successfully"
                 fi
-                if [ "$tool" = "qm" ]; then
-                    export arg2="$display_out"
-                    send_message "$chat_id" "$msg_success" "" "$message_id"
-                else
-                    send_message "$chat_id" "$(expand_msg "$msg_success")
-\`\`\`
-$display_out
-\`\`\`" "" "$message_id"
-                fi
+                export arg2="$display_out"
+                send_message "$chat_id" "$msg_success" "" "$message_id"
             fi
         ) >/dev/null 2>&1 </dev/null &
     else
-        # stop / restart — handled synchronously after confirming the host is up
+        # stop / restart — synchronous, requires a reachable host
         if ! is_host_alive; then
             send_message "$chat_id" "$MSG_HOST_OFFLINE" "" "$message_id"
             return
         fi
 
-        send_message "$chat_id" "$msg_progress" "" "$message_id"
+        # Resolve the guest type + state (or report not-found / wrong type).
+        local probe
+        probe=$(_guest_require "$chat_id" "$message_id" "$vmid" "$tool" "$msg_not_found") || return
+        tool="${probe%% *}"
 
-        if ! $SSH_CMD "$tool status $vmid" >/dev/null 2>&1; then
-            send_message "$chat_id" "$msg_not_found" "" "$message_id"
-            return
-        fi
+        send_message "$chat_id" "$msg_progress" "" "$message_id"
 
         local res_out
         res_out=$($SSH_CMD "$tool $op $vmid" 2>&1)
@@ -296,15 +283,8 @@ $display_out
                     reboot) payload="Restart signal dispatched" ;;
                 esac
             fi
-            if [ "$tool" = "qm" ]; then
-                export arg2="$payload"
-                send_message "$chat_id" "$msg_success" "" "$message_id"
-            else
-                send_message "$chat_id" "$(expand_msg "$msg_success")
-\`\`\`
-$payload
-\`\`\`" "" "$message_id"
-            fi
+            export arg2="$payload"
+            send_message "$chat_id" "$msg_success" "" "$message_id"
         fi
     fi
 }
@@ -314,9 +294,12 @@ $payload
 #   host_power_action <chat_id> <message_id> <action>
 #     action ∈ sleep | sleepforce | shutdown | shutdownforce | reboot | rebootforce
 #
-# Collapses the six host-power commands into a single implementation while
-# preserving each command's original guards (aliveness, maintenance window,
-# blocking guests), target-state marker and remote invocation.
+# Collapses the six host-power commands into a single implementation with ONE
+# uniform gating rule, so /sleep, /hostshutdown and /hostreboot behave the same:
+#   * force variants      → bypass all safety/idle criteria
+#   * safe variants       → refused while maintenance mode is ON, and refused
+#                           when the host's idle check (--check) declines
+#                           (active window, running guests, CPU, network, ports)
 # =============================================================================
 host_power_action() {
     local chat_id="$1"
@@ -325,9 +308,12 @@ host_power_action() {
 
     local progress_msg state remote_args done_msg maint_cmd
     local alive_style="check"    # check | inline | silent
-    local maint_check="none"     # active | require | none
-    local block_guests=0
+    local maint_check="none"     # active | none
+    local precheck=0
 
+    # The force variants deliberately carry no maint_check and no precheck: they
+    # bypass all safety/idle criteria (see README). The safe variants are gated
+    # by maintenance mode (router-side) and by the host's idle check (--check).
     case "$action" in
         sleep)
             progress_msg="$MSG_BOT_SLEEP_TRIGGERED"
@@ -344,8 +330,6 @@ host_power_action() {
             remote_args="--force"
             done_msg="$MSG_BOT_SLEEP_EXECUTED"
             alive_style="check"
-            maint_check="active"
-            maint_cmd="/sleepforce"
             ;;
         shutdown)
             progress_msg="$MSG_BOT_SHUTDOWN_SENDING"
@@ -353,9 +337,8 @@ host_power_action() {
             remote_args="--shutdown"
             done_msg="$MSG_BOT_SHUTDOWN_EXECUTED"
             alive_style="check"
-            maint_check="require"
+            maint_check="active"
             maint_cmd="/hostshutdown"
-            block_guests=1
             ;;
         shutdownforce)
             progress_msg="$MSG_BOT_SHUTDOWN_FORCE_SENDING"
@@ -363,7 +346,6 @@ host_power_action() {
             remote_args="--shutdown --force"
             done_msg="$MSG_BOT_SHUTDOWN_EXECUTED"
             alive_style="inline"
-            maint_check="none"
             ;;
         reboot)
             progress_msg="$MSG_BOT_REBOOT_SENDING"
@@ -371,9 +353,8 @@ host_power_action() {
             remote_args="--reboot"
             done_msg="$MSG_BOT_REBOOT_EXECUTED"
             alive_style="silent"
-            maint_check="require"
+            maint_check="active"
             maint_cmd="/hostreboot"
-            block_guests=1
             ;;
         rebootforce)
             progress_msg="$MSG_BOT_REBOOT_FORCE_SENDING"
@@ -381,12 +362,16 @@ host_power_action() {
             remote_args="--reboot --force"
             done_msg="$MSG_BOT_REBOOT_EXECUTED"
             alive_style="inline"
-            maint_check="active"
-            maint_cmd="/hostrebootforce"
             ;;
         *)
             return
             ;;
+    esac
+
+    # The "safe" variants (not the force ones) are gated by the host's idle
+    # checks; ask the host up-front so a refusal can be explained to the user.
+    case "$action" in
+        sleep|shutdown|reboot) precheck=1 ;;
     esac
 
     case "$alive_style" in
@@ -404,17 +389,49 @@ host_power_action() {
             ;;
     esac
 
+    # Maintenance mode is a global "hands off" switch: while it is ON, the safe
+    # variants are refused (the force variants bypass it, as documented).
     case "$maint_check" in
         active)
             if ! cmd_check_maintenance_active "$chat_id" "$message_id" "$maint_cmd"; then return; fi
             ;;
-        require)
-            if ! cmd_require_maintenance "$chat_id" "$message_id" "$maint_cmd"; then return; fi
-            ;;
     esac
 
-    if [ "$block_guests" -eq 1 ]; then
-        if ! cmd_blocking_guests_check "$chat_id" "$message_id"; then return; fi
+    # Pre-flight: the real action runs detached, so without this the user would
+    # always see "executed" even when the host refused to act. The host's idle
+    # checks (active window, running guests, CPU, network, ports) apply equally
+    # to /sleep, /hostshutdown and /hostreboot, so all three report the same way.
+    if [ "$precheck" -eq 1 ]; then
+        local chk verdict
+        # Capture stderr too: the SSH wrapper reports a refusal ("Access Denied")
+        # on stderr, which is how we tell a stale wrapper from a stale monitor.
+        chk=$($SSH_CMD "/usr/local/bin/proxmox_idle_monitor.sh --check" 2>&1)
+        verdict=$(printf '%s\n' "$chk" | grep '^HOMELAB_CHECK:' | tail -n 1)
+        export arg1="$maint_cmd"
+        case "$verdict" in
+            HOMELAB_CHECK:BLOCKED:*)
+                export arg2="${verdict#HOMELAB_CHECK:BLOCKED: }"
+                export arg3="${maint_cmd}force"
+                send_message "$chat_id" "$(render_msg "$MSG_BOT_ACTION_BLOCKED")" "" "$message_id"
+                return
+                ;;
+            HOMELAB_CHECK:IDLE)
+                # Host is idle — fall through and perform the action.
+                ;;
+            HOMELAB_CHECK:UNSUPPORTED)
+                send_message "$chat_id" "$(render_msg "$MSG_BOT_PRECHECK_UNSUPPORTED")" "" "$message_id"
+                ;;
+            *)
+                # No verdict. Distinguish a wrapper refusal from a generic failure
+                # so the user knows which side needs redeploying. The action itself
+                # is still gated on the host, so this is a warning, not a failure.
+                if printf '%s\n' "$chk" | grep -qi 'Access Denied'; then
+                    send_message "$chat_id" "$(render_msg "$MSG_BOT_PRECHECK_DENIED")" "" "$message_id"
+                else
+                    send_message "$chat_id" "$(render_msg "$MSG_BOT_PRECHECK_UNAVAILABLE")" "" "$message_id"
+                fi
+                ;;
+        esac
     fi
 
     send_message "$chat_id" "$progress_msg" "" "$message_id"

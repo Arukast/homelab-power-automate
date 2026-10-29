@@ -125,6 +125,7 @@ The OpenWrt router needs passwordless access to the Proxmox VE host to safely ex
 1. **Transfer the Proxmox files**:
    Transfer the `proxmox/` directory of this suite to your Proxmox host (e.g., via SCP):
    ```bash
+   ssh root@192.168.11.10 "rm -rf /tmp/proxmox_install"
    scp -r proxmox root@192.168.11.10:/tmp/proxmox_install
    ```
 2. **Run the Installer**:
@@ -281,7 +282,8 @@ Once active, search for your bot in Telegram and start interacting.
 #### Available Commands (Telegram):
 * **General**: `/help`
 * **Host Power Control**: `/status`, `/wake`, `/sleep`, `/sleepforce`, `/hostshutdown`, `/hostshutdownforce`, `/hostreboot`, `/hostrebootforce`
-* **Guest Node Control**: `/list`, `/node <vm|ct> <vmid> <start|stop|restart>`, `/ctstart <vmid>`, `/ctstop <vmid>`, `/ctrestart <vmid>`, `/vmstart <vmid>`, `/vmstop <vmid>`, `/vmrestart <vmid>`
+* **Guest Node Control**: `/list`, `/start <vmid>`, `/stop <vmid>`, `/restart <vmid>`, `/node <vm|ct> <vmid> <start|stop|restart>`
+  *(VMIDs are unique across QEMU VMs and LXC containers, so `/start|/stop|/restart` auto-detect the guest type. `/node` lets you force the type explicitly.)*
 * **Maintenance Control**: `/maintenance` (status/system/service/off commands)
 
 See the "Registering Commands with BotFather" section below for full registration details.
@@ -289,7 +291,7 @@ See the "Registering Commands with BotFather" section below for full registratio
 > [!IMPORTANT]
 > **Manual vs. Automated Sleep/Shutdown Design:**
 > * **Automated (Idle Checks):** The background cron job running on Proxmox evaluates `proxmox_idle_monitor.sh` continuously. It **will block** sleep if an orchestrated container is in its countdown, if CPU/network activity is high, or if you have open active SSH sessions (port 22) or Web UI sessions (port 8006).
-> * **Manual Safe Actions:** `/sleep`, `/hostshutdown`, and `/hostreboot` verify safety criteria (such as blocking if active non-exempt guest nodes are running) before triggering.
+> * **Manual Safe Actions:** `/sleep`, `/hostshutdown`, and `/hostreboot` all share the same gating rule — they are refused while **maintenance mode is ON**, and refused when the host's idle check declines (scheduled awake window, running guests, high CPU/network, or active connections). The bot runs `proxmox_idle_monitor.sh --check` first and replies with the exact reason instead of a silent no-op.
 > * **Manual Forced Actions:** Commands ending in `force` (like `/sleepforce`, `/hostshutdownforce`, `/hostrebootforce`) **bypass all safety/idle criteria** to immediately suspends/stop guests and trigger the power state changes.
 
 #### Registering Commands with BotFather:
@@ -308,13 +310,10 @@ To enable the auto-completion menu for commands in Telegram:
    hostreboot - Safely reboot the Proxmox host
    hostrebootforce - Force reboot host and stop/suspend guests
    list - List all LXC containers and QEMU VMs with status
-   node - Start/stop/restart a VM or container (/node <vm|ct> <vmid> <start|stop|restart>)
-   ctstart - Wake host and start a container (/ctstart <vmid>)
-   ctstop - Clean shutdown of a container (/ctstop <vmid>)
-   ctrestart - Restart a container (/ctrestart <vmid>)
-   vmstart - Wake host and start a VM (/vmstart <vmid>)
-   vmstop - Clean shutdown of a VM (/vmstop <vmid>)
-   vmrestart - Restart a VM (/vmrestart <vmid>)
+   start - Start a VM or container (/start <vmid>)
+   stop - Stop a VM or container (/stop <vmid>)
+   restart - Restart a VM or container (/restart <vmid>)
+   node - Explicit guest control (/node <vm|ct> <vmid> <start|stop|restart>)
    maintenance - Check or toggle system/service maintenance modes
    ```
 

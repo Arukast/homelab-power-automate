@@ -116,6 +116,21 @@ case "$SSH_ORIGINAL_COMMAND" in
         exit 0
         ;;
 
+    "/usr/local/bin/proxmox_idle_monitor.sh --check")
+        # Read-only pre-flight: reports whether a safe sleep/shutdown/reboot
+        # would be refused, without acting. No lock, no side effects.
+        #
+        # Safety: a monitor that predates --check support would IGNORE the flag
+        # and perform the real action (i.e. actually suspend the host) — so only
+        # run it when it advertises REPORT_ONLY, and otherwise say so.
+        if grep -q 'REPORT_ONLY' /usr/local/bin/proxmox_idle_monitor.sh 2>/dev/null; then
+            /usr/local/bin/proxmox_idle_monitor.sh --check
+        else
+            echo "HOMELAB_CHECK:UNSUPPORTED"
+        fi
+        exit 0
+        ;;
+
     *cpu=\$\(grep\ \'cpu\ \'*)
         cpu=$(grep 'cpu ' /proc/stat | awk '{usage=($2+$4)*100/($2+$4+$5)} END {printf "%.1f", usage}')
         ram=$(free -m | awk 'NR==2 {printf "%d:%d", $3, $2}')

@@ -12,8 +12,7 @@ status_command() {
     send_message "$chat_id" "$MSG_BOT_QUERY_STATUS"
 
     if ! is_host_alive; then
-        local markup=$(get_markup "status_offline")
-        send_message "$chat_id" "$(expand_msg "$MSG_BOT_HOST_SLEEPING")" "$markup" "$msg_id"
+        send_message "$chat_id" "$(expand_msg "$MSG_BOT_HOST_SLEEPING")" "" "$msg_id"
         return
     fi
 
@@ -43,6 +42,5 @@ status_command() {
 • LXC Containers: ${lxc_running}/${lxc_count} running
 • QEMU VMs: ${vm_running}/${vm_count} running"
 
-    local markup=$(get_markup "status_online")
-    send_message "$chat_id" "$status_msg" "$markup" "$msg_id"
+    send_message "$chat_id" "$status_msg" "" "$msg_id"
 }

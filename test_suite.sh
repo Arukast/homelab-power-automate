@@ -145,12 +145,9 @@ check_syntax "openwrt/telegram/components/commands/hostreboot_command.sh" "sh"
 check_syntax "openwrt/telegram/components/commands/hostrebootforce_command.sh" "sh"
 check_syntax "openwrt/telegram/components/commands/hostshutdown_command.sh" "sh"
 check_syntax "openwrt/telegram/components/commands/hostshutdownforce_command.sh" "sh"
-check_syntax "openwrt/telegram/components/commands/vmstart_command.sh" "sh"
-check_syntax "openwrt/telegram/components/commands/vmstop_command.sh" "sh"
-check_syntax "openwrt/telegram/components/commands/vmrestart_command.sh" "sh"
-check_syntax "openwrt/telegram/components/commands/ctstart_command.sh" "sh"
-check_syntax "openwrt/telegram/components/commands/ctstop_command.sh" "sh"
-check_syntax "openwrt/telegram/components/commands/ctrestart_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/start_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/stop_command.sh" "sh"
+check_syntax "openwrt/telegram/components/commands/restart_command.sh" "sh"
 check_syntax "openwrt/telegram/components/commands/maintenance_command.sh" "sh"
 
 # =============================================================================
@@ -414,11 +411,14 @@ else
     report_fail "homelab_ssh_wrapper.sh still writes the config without validation"
 fi
 
-# 7.10 /node is dispatched, and /list emits ct/vm callback data (not dead cmd:node:)
+# 7.10 /node is dispatched; inline-keyboard buttons have been removed everywhere
 check_ok "process_command_helper.sh dispatches /node" \
     grep -q '/node)' openwrt/telegram/components/process_command_helper.sh
-check_ok "list_command.sh emits cmd:ct:/cmd:vm: callback data" \
-    grep -q 'cmd:ct:' openwrt/telegram/components/commands/list_command.sh
+if grep -rq 'inline_keyboard' openwrt/telegram/ 2>/dev/null; then
+    report_fail "Inline-keyboard button markup is still generated in openwrt/telegram/"
+else
+    report_pass "No inline-keyboard button markup remains (all buttons removed)"
+fi
 
 # 7.11 polling_helper routes cmd:/maint: callbacks to process_action
 check_ok "polling_helper.sh routes cmd: callbacks" \
@@ -436,9 +436,11 @@ check_ok "host_power_action exists (collapsed host handlers)" \
 check_ok "guest_action exists (collapsed guest handlers)" \
     grep -q '^guest_action()' openwrt/telegram/components/command_helper.sh
 
-# 7.14 /node restart must be sent as `reboot` (the only verb the SSH wrapper allows)
+# 7.14 /node delegates to guest_action and maps restart -> reboot (wrapper verb)
+check_ok "node_command delegates to guest_action" \
+    grep -q 'guest_action' openwrt/telegram/components/commands/node_command.sh
 check_ok "node_command maps restart -> reboot for the wrapper allow-list" \
-    grep -q 'remote_op="reboot"' openwrt/telegram/components/commands/node_command.sh
+    grep -q 'restart) op="reboot"' openwrt/telegram/components/commands/node_command.sh
 
 # 7.15 Router SSH must not use OpenSSH-only options: OpenWrt's `ssh` is Dropbear's
 # client, which rejects `-o ConnectTimeout=...` and prints a warning to output.
@@ -458,6 +460,99 @@ PERM_OK=$(mktemp); chmod 600 "$PERM_OK"
 PERM_OUT=$(SSH_KEY_PATH="$PERM_OK" bash -c '. openwrt/config_sync/components/permission_helper.sh; check_permission' 2>&1)
 check "permission_helper is silent for a 0600 key" "$PERM_OUT" ""
 rm -f "$PERM_OPEN" "$PERM_OK"
+
+# 7.17 /wake and guest start short-circuit when the target is already up
+check_ok "/wake reports already-awake instead of re-sending a magic packet" \
+    grep -q 'MSG_BOT_WOL_ALREADY_AWAKE' openwrt/telegram/components/commands/wake_command.sh
+check_ok "guest_action reports an already-running guest instead of starting it" \
+    grep -q 'MSG_BOT_GUEST_ALREADY_RUNNING' openwrt/telegram/components/command_helper.sh
+check_ok "/maintenance prints usage when called with no sub-command" \
+    grep -q '_maint_usage' openwrt/telegram/components/commands/maintenance_command.sh
+
+# 7.18 Unified guest commands: /start /stop /restart auto-detect, /node kept
+check_ok "/start auto-detects the guest type" \
+    grep -q 'guest_action "$1" "$2" "$3" auto start' openwrt/telegram/components/commands/start_command.sh
+check_ok "/stop auto-detects the guest type" \
+    grep -q 'guest_action "$1" "$2" "$3" auto stop' openwrt/telegram/components/commands/stop_command.sh
+check_ok "/restart auto-detects the guest type" \
+    grep -q 'guest_action "$1" "$2" "$3" auto reboot' openwrt/telegram/components/commands/restart_command.sh
+check_ok "guest_action resolves the type when tool=auto" \
+    grep -q '"pct status \$vmid"' openwrt/telegram/components/command_helper.sh
+check_ok "forced-type mismatch is reported (not a raw Proxmox error)" \
+    grep -q 'MSG_BOT_GUEST_WRONG_TYPE' openwrt/telegram/components/command_helper.sh
+check_ok "dispatch table still contains /node" \
+    grep -q '/node)' openwrt/telegram/components/process_command_helper.sh
+check_ok "dispatch table no longer contains /ct* or /vm*" \
+    bash -c '! grep -qE "^((ct|vm)(start|stop|restart))\|" openwrt/telegram/components/process_command_helper.sh'
+
+# 7.19 Regression: a bare /maintenance must show usage, not be read as a sub-command
+MAINT_OUT=$(
+    . openwrt/telegram/components/maintenance_helper.sh
+    . openwrt/telegram/components/commands/maintenance_command.sh
+    . openwrt/telegram/components/process_command_helper.sh
+    send_message() { printf '%s\n' "$2"; }
+    process_command "/maintenance" 1 2
+)
+case "$MAINT_OUT" in
+    *Usage:*) report_pass "bare /maintenance shows usage" ;;
+    *) report_fail "bare /maintenance did not show usage" "$MAINT_OUT" ;;
+esac
+case "$MAINT_OUT" in
+    *"Unknown sub-command"*) report_fail "bare /maintenance was parsed as its own sub-command" ;;
+    *) report_pass "bare /maintenance is not treated as a sub-command" ;;
+esac
+
+# 7.20 /maintenance keeps a multi-word reason intact
+MAINT_REASON_DIR=$(mktemp -d)
+MAINT_REASON=$(MAINT_DIR="$MAINT_REASON_DIR" sh -c '
+    . openwrt/telegram/components/maintenance_helper.sh
+    . openwrt/telegram/components/commands/maintenance_command.sh
+    send_message() { :; }
+    maintenance_command 1 2 system "on swapping RAM"
+    cat "$MAINT_DIR/system"
+' 2>&1)
+check "/maintenance keeps a multi-word reason" "$MAINT_REASON" "swapping RAM"
+rm -rf "$MAINT_REASON_DIR"
+
+# 7.21 Safe-action pre-flight (--check) plumbing
+check_ok "idle monitor supports --check (REPORT_ONLY)" \
+    grep -q 'REPORT_ONLY=1' proxmox/proxmox_idle_monitor.sh
+check_ok "idle monitor emits a machine-readable verdict" \
+    grep -q 'HOMELAB_CHECK:BLOCKED' proxmox/proxmox_idle_monitor.sh
+check_ok "SSH wrapper allow-lists 'proxmox_idle_monitor.sh --check'" \
+    grep -q 'proxmox_idle_monitor.sh --check' proxmox/homelab_ssh_wrapper.sh
+check_ok "wrapper refuses --check on a stale monitor (never acts by accident)" \
+    grep -q 'HOMELAB_CHECK:UNSUPPORTED' proxmox/homelab_ssh_wrapper.sh
+check_ok "bot warns when the pre-check is unavailable" \
+    grep -q 'MSG_BOT_PRECHECK_UNAVAILABLE' openwrt/telegram/components/command_helper.sh
+check_ok "bot names a stale wrapper (Access Denied)" \
+    grep -q 'MSG_BOT_PRECHECK_DENIED' openwrt/telegram/components/command_helper.sh
+check_ok "bot names a stale monitor (HOMELAB_CHECK:UNSUPPORTED)" \
+    grep -q 'MSG_BOT_PRECHECK_UNSUPPORTED' openwrt/telegram/components/command_helper.sh
+check_ok "host_power_action consumes the --check verdict" \
+    grep -q 'HOMELAB_CHECK:BLOCKED:\*' openwrt/telegram/components/command_helper.sh
+check_ok "a blocked safe action sends MSG_BOT_ACTION_BLOCKED" \
+    grep -q 'MSG_BOT_ACTION_BLOCKED' openwrt/telegram/components/command_helper.sh
+
+# 7.23 Uniform power-action gating (sleep == shutdown == reboot)
+check_ok "the misleading require-maintenance gate is gone" \
+    bash -c '! grep -q "cmd_require_maintenance\|maint_check=\"require\"" openwrt/telegram/components/command_helper.sh'
+check_ok "sleep/shutdown/reboot share the same maintenance gate" \
+    bash -c '[ "$(grep -c "maint_check=\"active\"" openwrt/telegram/components/command_helper.sh)" = "3" ]'
+check_ok "blocked safe actions offer the force override" \
+    grep -q 'arg3="${maint_cmd}force"' openwrt/telegram/components/command_helper.sh
+
+# 7.22 Functional: --check reports the block reason (temp config, protected proc)
+CHK_CONF=$(mktemp)
+printf 'PROTECTED_PROCESSES="sh"\nLOG_FILE="/dev/null"\nENABLE_SYSLOG=0\nNET_INTERFACE="nonexistent0"\n' > "$CHK_CONF"
+sed "s#^CONF=\"/etc/homelab_power.conf\"#CONF=\"$CHK_CONF\"#" proxmox/proxmox_idle_monitor.sh > proxmox/_mon_check_test.sh
+CHK_BLOCKED_OUT=$(bash proxmox/_mon_check_test.sh --check 2>/dev/null)
+rm -f proxmox/_mon_check_test.sh "$CHK_CONF"
+case "$CHK_BLOCKED_OUT" in
+    "HOMELAB_CHECK:BLOCKED: protected process 'sh' is currently running")
+        report_pass "--check reports the exact block reason (clean stdout)" ;;
+    *) report_fail "--check block reason" "$CHK_BLOCKED_OUT" ;;
+esac
 
 # =============================================================================
 # SUMMARY REPORT

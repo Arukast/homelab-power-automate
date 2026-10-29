@@ -1,0 +1,14 @@
+# Taste — Command Code
+- Prefers to review and iterate on a plan before it is executed — deliberately stays in plan mode and does not immediately approve implementation. Confidence: 0.6
+- When planning improvements, prefers a comprehensive, phased plan (bugs, security, reliability, then refactoring) over a minimal quick-fix scope. Confidence: 0.6
+- Prefers removing dead code and unused config/docs over building out features that don't actually exist in the repo. Confidence: 0.5
+- When executing a plan, wants the main agent to act as PM/orchestrator and delegate the work to multiple sub-agents (e.g. parallel agents on disjoint zones) rather than doing it all itself. Confidence: 0.7
+- Prefers plain text bot/chat messages with no interactive inline-keyboard buttons (wants them removed everywhere, not just one command). Confidence: 0.7
+- Prefers commands to be self-documenting — a bare command (or explicit help sub-command) should print full usage and examples. Confidence: 0.6
+- Prefers idempotent actions that detect an already-done state and report it ("already awake/running") instead of re-firing the operation. Confidence: 0.6
+- Prefers consolidating overlapping/redundant commands into a single unified interface (fewer commands, one shared implementation) rather than keeping parallel ways to do the same thing — but retains an explicit escape-hatch command for edge cases/forced intent. Confidence: 0.5
+- Prefers user-facing errors that detect and explain the cause (e.g. "VMID 4001 is a CT, not a VM") and suggest the right command, rather than leaking raw upstream/tool errors (like a raw Proxmox config-file error) into chat. Confidence: 0.6
+- Wants refused/blocked actions to notify the user with the reason instead of reporting a false success — incl. commands that delegate to a detached host-side process, which should pre-check the outcome before claiming it ran. Confidence: 0.7
+- Dislikes silent fallbacks in verification paths: when the pre-check/status probe cannot run or returns nothing (stale deploy, missing allow-list entry, SSH hiccup), wants the degraded state surfaced loudly (a warning that names the likely cause / which component is stale) rather than quietly proceeding as if the action were verified — a generic "pre-check unavailable" warning is not enough. Confidence: 0.6
+- Expects sibling commands of a class to be consistent in behaviour and messaging: if one command's strange behaviour is reported, treats it as a signal to unify the whole class (e.g. make `/sleep`, `/hostshutdown` and `/hostreboot` share one gating rule and the same blocked message) rather than patching just the reported command. Confidence: 0.7
+- Wants refusal/error messages to state the actual reason rather than a hard-coded or misleading one (e.g. calling a "maintenance not enabled" refusal an "Active Window" block is treated as a bug), and prefers a single source of truth for the reason. Confidence: 0.6

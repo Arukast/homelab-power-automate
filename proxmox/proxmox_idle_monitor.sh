@@ -54,30 +54,42 @@ load_msg_conf "$MSG_CONF"
 # Ensure log file exists
 touch "$LOG_FILE"
 
-# --- Single-instance lock (task 2.2) ---
-# This script is launched both by proxmox_idle_monitor.timer and on demand by
-# the Telegram command handlers; two concurrent runs could double-suspend
-# guests. util-linux flock is present on Proxmox VE.
-exec 9>/run/proxmox_idle_monitor.lock
-flock -w 5 9 || { log "another instance is running; exiting"; exit 0; }
-
-# Parse arguments
+# Parse arguments.
+#   --check : run the idle checks and REPORT the verdict WITHOUT acting. It is
+#             read-only (no guest suspension, no lock) and is used by the
+#             Telegram bot to explain why a safe action was refused.
 FORCE_SLEEP=0
+REPORT_ONLY=0
 ACTION="suspend"
 
 for arg in "$@"; do
     case "$arg" in
-        --force|force)
-            FORCE_SLEEP=1
-            ;;
-        --shutdown|shutdown)
-            ACTION="shutdown"
-            ;;
-        --reboot|reboot)
-            ACTION="reboot"
-            ;;
+        --force|force)       FORCE_SLEEP=1 ;;
+        --shutdown|shutdown) ACTION="shutdown" ;;
+        --reboot|reboot)     ACTION="reboot" ;;
+        --check|check)       REPORT_ONLY=1 ;;
     esac
 done
+
+# --- Single-instance lock (task 2.2) ---
+# This script is launched both by proxmox_idle_monitor.timer and on demand by
+# the Telegram command handlers; two concurrent runs could double-suspend
+# guests. util-linux flock is present on Proxmox VE. --check never locks, so it
+# can run alongside an in-flight timer run.
+if [ "$REPORT_ONLY" -eq 0 ]; then
+    exec 9>/run/proxmox_idle_monitor.lock
+    flock -w 5 9 || { log "another instance is running; exiting"; exit 0; }
+fi
+
+# Report the reason the host is NOT idle and stop. In --check mode the reason is
+# also emitted on a machine-readable line so the Telegram bot can surface it.
+blocked() {
+    log "BLOCK: $1"
+    if [ "$REPORT_ONLY" -eq 1 ]; then
+        printf 'HOMELAB_CHECK:BLOCKED: %s\n' "$1"
+    fi
+    exit 0
+}
 
 # If the target host action is shutdown or reboot, we MUST stop guests rather than S3-suspending to RAM!
 if [ "$ACTION" = "shutdown" ] || [ "$ACTION" = "reboot" ]; then
@@ -95,8 +107,7 @@ fi
 # Run activity and idle checks only if not forced
 if [ "$FORCE_SLEEP" -eq 0 ]; then
     if is_in_active_window; then
-        log "ACTIVE SCHEDULE: Current time is within scheduled awake window ($ACTIVE_TIME_WINDOWS). Skipping sleep checks."
-        exit 0
+        blocked "current time is within the scheduled awake window ($ACTIVE_TIME_WINDOWS)"
     fi
 
 # 0. Individual Guest Auto-Sleep Check
@@ -227,7 +238,9 @@ if [ -n "$GUEST_ORCHESTRATION_MAP" ]; then
                             [ -z "$GUEST_NAME" ] && GUEST_NAME="Guest $VMID"
                             TIMEOUT_MIN="$TIMEOUT_MIN"
                             
-                            if pct status "$VMID" >/dev/null 2>&1; then
+                            if [ "$REPORT_ONLY" -eq 1 ]; then
+                                log "Guest [$VMID] idle timeout reached (check mode: not suspending)."
+                            elif pct status "$VMID" >/dev/null 2>&1; then
                                 if [ "$LXC_SUSPEND_METHOD" = "suspend" ]; then
                                     log "Suspending LXC [$VMID]..."
                                     pct suspend "$VMID"
@@ -260,11 +273,14 @@ if [ -n "$GUEST_ORCHESTRATION_MAP" ]; then
         fi
     done
     
-    printf "%s" "$NEW_STATES" | sed '/^$/d' > "$STATE_FILE"
+    # In --check mode do not touch the persisted idle timers (a check must have
+    # no side effects on the real schedule).
+    if [ "$REPORT_ONLY" -eq 0 ]; then
+        printf "%s" "$NEW_STATES" | sed '/^$/d' > "$STATE_FILE"
+    fi
     
     if [ "$ORCHESTRATED_GUESTS_RUNNING" -gt 0 ]; then
-        log "BLOCK: Orchestrated guest(s) are still active or waiting for idle timeout. Host is NOT idle."
-        exit 0
+        blocked "orchestrated guest(s) are still active or waiting for idle timeout"
     fi
 fi
 
@@ -305,15 +321,13 @@ done
 
 if [ -n "$BLOCKING_UNMANAGED_GUESTS" ]; then
     clean_unmanaged=$(echo "$BLOCKING_UNMANAGED_GUESTS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    log "BLOCK: Active non-exempt unmanaged guest(s) are running ($clean_unmanaged). Host is NOT idle."
-    exit 0
+    blocked "active non-exempt guest(s) are running ($clean_unmanaged)"
 fi
 
 # 1. Check Protected Processes
 for proc in $PROTECTED_PROCESSES; do
     if pgrep -x "$proc" >/dev/null 2>&1; then
-        log "BLOCK: Protected process '$proc' is currently running. Host is NOT idle."
-        exit 0
+        blocked "protected process '$proc' is currently running"
     fi
 done
 
@@ -341,35 +355,38 @@ log "Current 1-minute CPU load average: $LOAD_1 (Threshold: $ACTUAL_THRESHOLD)"
 
 LOAD_INT=$(to_integer "$LOAD_1")
 if [ "$LOAD_INT" -gt "$SCALED_INT" ]; then
-    log "BLOCK: CPU load average ($LOAD_1) exceeds threshold ($ACTUAL_THRESHOLD). Host is NOT idle."
-    exit 0
+    blocked "CPU load average ($LOAD_1) exceeds threshold ($ACTUAL_THRESHOLD)"
 fi
 
 # 2.5. Check Network Interface Traffic Rate (Over 10-second window)
 if [ -n "$NET_INTERFACE" ] && [ -d "/sys/class/net/$NET_INTERFACE" ]; then
-    log "Measuring network throughput on $NET_INTERFACE over 10 seconds..."
-    
+    # A shorter window in --check mode keeps the bot's pre-flight prompt; the
+    # threshold is scaled by the window so the comparison is still in KB/s.
+    NET_SAMPLE_SECS=10
+    [ "$REPORT_ONLY" -eq 1 ] && NET_SAMPLE_SECS=2
+
+    log "Measuring network throughput on $NET_INTERFACE over $NET_SAMPLE_SECS seconds..."
+
     RX_BYTES_1=$(cat "/sys/class/net/$NET_INTERFACE/statistics/rx_bytes")
     TX_BYTES_1=$(cat "/sys/class/net/$NET_INTERFACE/statistics/tx_bytes")
-    
-    sleep 10
-    
+
+    sleep "$NET_SAMPLE_SECS"
+
     RX_BYTES_2=$(cat "/sys/class/net/$NET_INTERFACE/statistics/rx_bytes")
     TX_BYTES_2=$(cat "/sys/class/net/$NET_INTERFACE/statistics/tx_bytes")
-    
+
     RX_DIFF=$((RX_BYTES_2 - RX_BYTES_1))
     TX_DIFF=$((TX_BYTES_2 - TX_BYTES_1))
-    
+
     # Calculate average KB/s
     TOTAL_KB=$(( (RX_DIFF + TX_DIFF) / 1024 ))
-    TOTAL_THRESHOLD=$(( NET_THRESHOLD_KBPS * 10 ))
-    AVERAGE_KBPS=$(( TOTAL_KB / 10 ))
-    
+    TOTAL_THRESHOLD=$(( NET_THRESHOLD_KBPS * NET_SAMPLE_SECS ))
+    AVERAGE_KBPS=$(( TOTAL_KB / NET_SAMPLE_SECS ))
+
     log "Network activity: ~${AVERAGE_KBPS} KB/s (Threshold: ${NET_THRESHOLD_KBPS} KB/s)"
-    
+
     if [ "$TOTAL_KB" -gt "$TOTAL_THRESHOLD" ]; then
-        log "BLOCK: Average network throughput (~${AVERAGE_KBPS} KB/s) exceeds threshold (${NET_THRESHOLD_KBPS} KB/s). Host is NOT idle."
-        exit 0
+        blocked "network throughput (~${AVERAGE_KBPS} KB/s) exceeds threshold (${NET_THRESHOLD_KBPS} KB/s)"
     fi
 else
     log "Skipping network throughput check (Interface $NET_INTERFACE not found or not configured)."
@@ -403,12 +420,17 @@ for port in $(echo "$ACTIVE_CHECK_PORTS" | tr ',' ' '); do
     fi
     
     if [ "$conn_count" -gt 0 ]; then
-        log "BLOCK: Found $conn_count active $proto connection(s) on monitored port $port_num. Host is NOT idle."
-        exit 0
+        blocked "$conn_count active $proto connection(s) on monitored port $port_num"
     fi
 done
 
 
+fi
+
+# --check never acts: report that the action WOULD proceed and stop.
+if [ "$REPORT_ONLY" -eq 1 ]; then
+    printf 'HOMELAB_CHECK:IDLE\n'
+    exit 0
 fi
 
 log "CONFIRM: All idle checks passed. Preparing to transition to power-saving mode."

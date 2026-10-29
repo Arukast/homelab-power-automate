@@ -30,7 +30,9 @@ log() {
     if [ "${ENABLE_SYSLOG:-0}" -eq 1 ]; then
         logger -t "${LOG_TAG:-proxmox-power}" "$1"
     fi
-    echo "$msg"
+    # In --check mode keep stdout clean so the caller parses only the
+    # HOMELAB_CHECK verdict line.
+    [ "${REPORT_ONLY:-0}" -eq 1 ] || echo "$msg"
 }
 
 # --- Notification -----------------------------------------------------------

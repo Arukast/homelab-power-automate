@@ -6,8 +6,29 @@
 # =============================================================================
 
 # Usage strings kept here so they stay close to the command logic
-_MAINT_USAGE_SYSTEM="Usage: /maintenance system \`<on|off>\` \`[reason]\`"
-_MAINT_USAGE_SERVICE="Usage: /maintenance service \`<vmid>\` \`<on|off>\` \`[reason]\`"
+_MAINT_USAGE_SYSTEM="Usage: /maintenance system on <reason>  |  /maintenance system off"
+_MAINT_USAGE_SERVICE="Usage: /maintenance service <vmid> on <reason>  |  /maintenance service <vmid> off"
+
+# ---------------------------------------------------------------------------
+# _maint_usage
+# Full help text for the /maintenance command.
+# ---------------------------------------------------------------------------
+_maint_usage() {
+    printf '%s' "[Maintenance] Blocks automated and manual power actions so guests stay up.
+
+Usage:
+• /maintenance status — show the current maintenance state
+• /maintenance system on <reason> — block ALL power actions host-wide
+• /maintenance system off — allow power actions again
+• /maintenance service <vmid> on <reason> — block actions for one guest
+• /maintenance service <vmid> off — unblock that guest
+• /maintenance off — clear ALL maintenance flags at once
+
+Examples:
+/maintenance system on swapping RAM
+/maintenance service 101 on disk replacement
+/maintenance off"
+}
 
 # ---------------------------------------------------------------------------
 # _maint_reply <chat_id> <message_id> <text>
@@ -82,41 +103,49 @@ maintenance_command() {
     local chat_id="$1"
     local message_id="$2"
     local sub_cmd="$3"
-    local arg1="$4"
-    local arg2="$5"
-    local arg3="$6"
+    local rest="$4"
 
-    # No sub-command → show help menu
+    # No sub-command → show the usage menu
     if [ -z "$sub_cmd" ]; then
-        local markup
-        markup=$(get_markup "maintenance")
-        send_message "$chat_id" "$MSG_BOT_MAINT_HELP" "$markup" "$message_id"
+        _maint_reply "$chat_id" "$message_id" "$(_maint_usage)"
         return
     fi
 
+    # Split the remainder into fixed tokens plus a trailing reason that keeps its
+    # spaces. after1 = rest without its first token; after2 = without its first
+    # two tokens (e.g. rest="101 on replacing disk" → a1=101 a2=on
+    # after2="replacing disk").
+    local a1 a2 after1 after2
+    a1=$(printf '%s' "$rest" | awk '{print $1}')
+    a2=$(printf '%s' "$rest" | awk '{print $2}')
+    after1=$(printf '%s' "$rest" | awk '{ $1=""; sub(/^[[:space:]]+/, ""); print }')
+    after2=$(printf '%s' "$rest" | awk '{ $1=""; $2=""; sub(/^[[:space:]]+/, ""); print }')
+
     case "$sub_cmd" in
+        help|"-h"|"--help"|"?")
+            _maint_reply "$chat_id" "$message_id" "$(_maint_usage)"
+            ;;
+
         status)
             _maint_reply "$chat_id" "$message_id" "$(maintenance_status)"
             ;;
 
         system)
-            # /maintenance system on [reason]
-            # /maintenance system off
-            if [ -z "$arg1" ]; then
+            # /maintenance system on <reason...>   |   /maintenance system off
+            if [ -z "$a1" ]; then
                 _maint_reply "$chat_id" "$message_id" "$_MAINT_USAGE_SYSTEM"
                 return
             fi
-            _maint_system_cmd "$chat_id" "$message_id" "$arg1" "$arg2"
+            _maint_system_cmd "$chat_id" "$message_id" "$a1" "$after1"
             ;;
 
         service)
-            # /maintenance service <vmid> on [reason]
-            # /maintenance service <vmid> off
-            if [ -z "$arg1" ] || [ -z "$arg2" ]; then
+            # /maintenance service <vmid> on <reason...>  |  ... <vmid> off
+            if [ -z "$a1" ] || [ -z "$a2" ]; then
                 _maint_reply "$chat_id" "$message_id" "$_MAINT_USAGE_SERVICE"
                 return
             fi
-            _maint_service_cmd "$chat_id" "$message_id" "$arg1" "$arg2" "$arg3"
+            _maint_service_cmd "$chat_id" "$message_id" "$a1" "$a2" "$after2"
             ;;
 
         off)
@@ -126,7 +155,7 @@ maintenance_command() {
 
         *)
             _maint_reply "$chat_id" "$message_id" \
-                "Unknown sub-command \`$sub_cmd\`. Available: \`status\` · \`system\` · \`service\` · \`off\`"
+                "Unknown sub-command \`$sub_cmd\`. Send /maintenance for usage."
             ;;
     esac
 }
